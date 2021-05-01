@@ -16,7 +16,7 @@
   z-index: 1;
 }
 
-@supports not -moz-bool-pref("browser.proton.enabled") {
+@media not (-moz-proton) {
 .notificationbox-stack[notificationside="top"] {
   box-shadow: 0 3px 10px -7px #00000080;
 }
@@ -140,7 +140,6 @@ notification[type="critical"] > hbox > .messageImage {
 
 .messageCloseButton:-moz-focusring > .toolbarbutton-icon {
   outline: var(--toolbarbutton-focus-outline, 2px solid currentColor);
-  -moz-outline-radius: var(--toolbarbutton-border-radius, 4px);
 }
 
 .notification-button {
@@ -148,8 +147,7 @@ notification[type="critical"] > hbox > .messageImage {
   border: 1px solid transparent;
   border-radius: 4px;
   background-color: var(--notification-button-background);
-  /* Override button.css hover & active styles */
-  color: var(--notification-button-text) !important;
+  color: var(--notification-button-text);
   padding: 0 6px;
   margin: 4px 8px;
   height: 24px;
@@ -169,7 +167,6 @@ notification[type="critical"] > hbox > .messageImage {
 
 .notification-button:-moz-focusring {
   outline: var(--toolbarbutton-focus-outline, 2px solid currentColor);
-  -moz-outline-radius: var(--toolbarbutton-border-radius, 4px);
 }
 
 .notification-button.primary {
@@ -191,7 +188,7 @@ notification[type="critical"] > hbox > .messageImage {
   background-color: var(--notification-primary-button-background-active);
 }
 
-@supports -moz-bool-pref("browser.proton.infobars.enabled") {
+@media (-moz-proton) {
 .notificationbox-stack {
   background-color: var(--toolbar-bgcolor);
   width: 100%;

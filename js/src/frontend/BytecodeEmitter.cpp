@@ -62,7 +62,7 @@
 #include "frontend/WhileEmitter.h"                 // WhileEmitter
 #include "js/CompileOptions.h"  // TransitiveCompileOptions, CompileOptions
 #include "js/friend/ErrorMessages.h"      // JSMSG_*
-#include "js/friend/StackLimits.h"        // CheckRecursionLimit
+#include "js/friend/StackLimits.h"        // AutoCheckRecursionLimit
 #include "util/StringBuffer.h"            // StringBuffer
 #include "vm/AsyncFunctionResolveKind.h"  // AsyncFunctionResolveKind
 #include "vm/BytecodeUtil.h"  // JOF_*, IsArgOp, IsLocalOp, SET_UINT24, SET_ICINDEX, BytecodeFallsThrough, BytecodeIsJumpTarget
@@ -1051,7 +1051,8 @@ JSOp BytecodeEmitter::strictifySetNameOp(JSOp op) {
 }
 
 bool BytecodeEmitter::checkSideEffects(ParseNode* pn, bool* answer) {
-  if (!CheckRecursionLimit(cx)) {
+  AutoCheckRecursionLimit recursion(cx);
+  if (!recursion.check(cx)) {
     return false;
   }
 
@@ -1800,7 +1801,7 @@ bool BytecodeEmitter::emitTDZCheckIfNeeded(TaggedParserAtomIndex name,
   // Dynamic accesses have TDZ checks built into their VM code and should
   // never emit explicit TDZ checks.
   MOZ_ASSERT(loc.hasKnownSlot());
-  MOZ_ASSERT(loc.isLexical());
+  MOZ_ASSERT(loc.isLexical() || loc.isPrivateMethod() || loc.isSynthetic());
 
   // Private names are implemented as lexical bindings, but it's just an
   // implementation detail. Per spec there's no TDZ check when using them.
@@ -4910,7 +4911,7 @@ bool BytecodeEmitter::emitCallSiteObjectArray(ListNode* cookedOrRaw,
 
   ObjLiteralWriter writer;
 
-  ObjLiteralFlags flags(ObjLiteralFlag::Array);
+  ObjLiteralFlags flags({ObjLiteralFlag::Array});
   writer.beginObject(flags);
   writer.beginDenseArrayElements();
 
@@ -5997,10 +5998,7 @@ MOZ_NEVER_INLINE bool BytecodeEmitter::emitFunction(
       return false;
     }
     MOZ_ASSERT(funNode->functionIsHoisted());
-    return true;
-  }
-
-  if (funbox->isInterpreted()) {
+  } else if (funbox->isInterpreted()) {
     if (!funbox->emitBytecode) {
       return fe.emitLazy();
       //            [stack] FUN?
@@ -6025,13 +6023,19 @@ MOZ_NEVER_INLINE bool BytecodeEmitter::emitFunction(
       //            [stack] FUN?
       return false;
     }
-
-    return true;
+  } else {
+    if (!fe.emitAsmJSModule()) {
+      //              [stack]
+      return false;
+    }
   }
 
-  if (!fe.emitAsmJSModule()) {
-    //              [stack]
-    return false;
+  // Track the last emitted top-level self-hosted function, so that intrinsics
+  // can adjust attributes at parse time.
+  if (emitterMode == EmitterMode::SelfHosting) {
+    if (sc->isTopLevelContext() && funbox->explicitName()) {
+      prevSelfHostedTopLevelFunction = funbox;
+    }
   }
 
   return true;
@@ -7648,6 +7652,57 @@ bool BytecodeEmitter::emitSelfHostedGetBuiltinPrototype(BinaryNode* callNode) {
 }
 
 #ifdef DEBUG
+bool BytecodeEmitter::checkSelfHostedExpectedTopLevel(BinaryNode* callNode,
+                                                      ParseNode* node) {
+  // The function argument is expected to be a simple binding/function name.
+  // Eg. `function foo() { }; SpecialIntrinsic(foo)`
+  if (!node->isKind(ParseNodeKind::Name)) {
+    reportError(callNode, JSMSG_UNEXPECTED_TYPE, "function argument",
+                "not a binding name");
+    return false;
+  }
+  TaggedParserAtomIndex targetName = node->as<NameNode>().name();
+
+  // The special intrinsics must follow the target functions definition. A
+  // simple assert is fine here since any hoisted function will cause a non-null
+  // value to be set here.
+  MOZ_ASSERT(prevSelfHostedTopLevelFunction);
+
+  // The target function must match the most recently defined top-level
+  // self-hosted function.
+  if (prevSelfHostedTopLevelFunction->explicitName() != targetName) {
+    reportError(callNode, JSMSG_SELFHOST_DECORATOR_MUST_FOLLOW);
+    return false;
+  }
+
+  return true;
+}
+#endif
+
+bool BytecodeEmitter::emitSelfHostedSetIsInlinableLargeFunction(
+    BinaryNode* callNode) {
+  ListNode* argsList = &callNode->right()->as<ListNode>();
+
+  if (argsList->count() != 1) {
+    reportNeedMoreArgsError(callNode, "_SetIsInlinableLargeFunction", "1", "",
+                            argsList);
+    return false;
+  }
+
+#ifdef DEBUG
+  if (!checkSelfHostedExpectedTopLevel(callNode, argsList->head())) {
+    return false;
+  }
+#endif
+
+  MOZ_ASSERT(prevSelfHostedTopLevelFunction->isInitialCompilation);
+  prevSelfHostedTopLevelFunction->setIsInlinableLargeFunction();
+
+  // This is still a call node, so we must generate a stack value.
+  return emit1(JSOp::Undefined);
+}
+
+#ifdef DEBUG
 bool BytecodeEmitter::checkSelfHostedUnsafeGetReservedSlot(
     BinaryNode* callNode) {
   ListNode* argsList = &callNode->right()->as<ListNode>();
@@ -7718,7 +7773,8 @@ bool BytecodeEmitter::emitOptionalCalleeAndThis(ParseNode* callee,
                                                 CallNode* call,
                                                 CallOrNewEmitter& cone,
                                                 OptionalEmitter& oe) {
-  if (!CheckRecursionLimit(cx)) {
+  AutoCheckRecursionLimit recursion(cx);
+  if (!recursion.check(cx)) {
     return false;
   }
 
@@ -8187,6 +8243,10 @@ bool BytecodeEmitter::emitCallOrNew(
     if (calleeName == TaggedParserAtomIndex::WellKnown::GetBuiltinPrototype()) {
       return emitSelfHostedGetBuiltinPrototype(callNode);
     }
+    if (calleeName ==
+        TaggedParserAtomIndex::WellKnown::SetIsInlinableLargeFunction()) {
+      return emitSelfHostedSetIsInlinableLargeFunction(callNode);
+    }
 #ifdef DEBUG
     if (calleeName ==
             TaggedParserAtomIndex::WellKnown::UnsafeGetReservedSlot() ||
@@ -8322,7 +8382,8 @@ bool BytecodeEmitter::emitLeftAssociative(ListNode* node) {
 bool BytecodeEmitter::emitOptionalTree(
     ParseNode* pn, OptionalEmitter& oe,
     ValueUsage valueUsage /* = ValueUsage::WantValue */) {
-  if (!CheckRecursionLimit(cx)) {
+  AutoCheckRecursionLimit recursion(cx);
+  if (!recursion.check(cx)) {
     return false;
   }
   ParseNodeKind kind = pn->getKind();
@@ -9218,7 +9279,7 @@ bool BytecodeEmitter::emitPropertyListObjLiteral(ListNode* obj,
 #endif
 
   writer.beginObject(flags);
-  bool singleton = flags.contains(ObjLiteralFlag::Singleton);
+  bool singleton = flags.hasFlag(ObjLiteralFlag::Singleton);
 
   for (ParseNode* propdef : obj->contents()) {
     BinaryNode* prop = &propdef->as<BinaryNode>();
@@ -9337,7 +9398,7 @@ bool BytecodeEmitter::emitObjLiteralArray(ParseNode* arrayHead) {
 
   ObjLiteralWriter writer;
 
-  ObjLiteralFlags flags(ObjLiteralFlag::Array, ObjLiteralFlag::Singleton);
+  ObjLiteralFlags flags({ObjLiteralFlag::Array, ObjLiteralFlag::Singleton});
 
   writer.beginObject(flags);
 
@@ -10064,7 +10125,7 @@ MOZ_NEVER_INLINE bool BytecodeEmitter::emitObject(ListNode* objNode) {
     ObjLiteralFlags flags;
     if (singleton) {
       // Case 1 or 2.
-      flags += ObjLiteralFlag::Singleton;
+      flags.setFlag(ObjLiteralFlag::Singleton);
     } else {
       // Case 3.
       useObjLiteralValues = false;
@@ -10973,7 +11034,8 @@ MOZ_NEVER_INLINE bool BytecodeEmitter::emitInstrumentationForOpcodeSlow(
 bool BytecodeEmitter::emitTree(
     ParseNode* pn, ValueUsage valueUsage /* = ValueUsage::WantValue */,
     EmitLineNumberNote emitLineNote /* = EMIT_LINENOTE */) {
-  if (!CheckRecursionLimit(cx)) {
+  AutoCheckRecursionLimit recursion(cx);
+  if (!recursion.check(cx)) {
     return false;
   }
 

@@ -153,6 +153,13 @@
 
     on_popupshowing(event) {
       if (this.isArrowPanel && event.target == this) {
+        if (this.isAnchored && this.anchorNode) {
+          let anchorRoot =
+            this.anchorNode.closest("toolbarbutton, .anchor-root") ||
+            this.anchorNode;
+          anchorRoot.setAttribute("open", "true");
+        }
+
         var arrow = this.shadowRoot.querySelector(".panel-arrow");
         arrow.hidden = !this.isAnchored;
         this.shadowRoot
@@ -204,12 +211,6 @@
         this.setAttribute("panelopen", "true");
       }
 
-      if (this.isAnchored && this.anchorNode) {
-        let anchorRoot =
-          this.anchorNode.closest("toolbarbutton") || this.anchorNode;
-        anchorRoot.setAttribute("open", "true");
-      }
-
       // Fire event for accessibility APIs
       let alertEvent = document.createEvent("Events");
       alertEvent.initEvent("AlertActive", true, true);
@@ -228,12 +229,13 @@
         } else if (animate) {
           this.setAttribute("animate", "cancel");
         }
-      }
 
-      if (this.isAnchored && this.anchorNode) {
-        let anchorRoot =
-          this.anchorNode.closest("toolbarbutton") || this.anchorNode;
-        anchorRoot.removeAttribute("open");
+        if (this.isAnchored && this.anchorNode) {
+          let anchorRoot =
+            this.anchorNode.closest("toolbarbutton, .anchor-root") ||
+            this.anchorNode;
+          anchorRoot.removeAttribute("open");
+        }
       }
 
       try {

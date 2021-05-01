@@ -108,9 +108,11 @@ add_task(async function test_gifft_timing_dist() {
 
   let data = Glean.testOnlyIpc.aTimingDist.testGetValue();
   const NANOS_IN_MILLIS = 1e6;
+  // bug 1701949 - Sleep gets close, but sometimes doesn't wait long enough.
+  const EPSILON = 40000;
 
   // Variance in timing makes getting the sum impossible to know.
-  Assert.greater(data.sum, 15 * NANOS_IN_MILLIS, "Total time elapsed: > 15ms");
+  Assert.greater(data.sum, 15 * NANOS_IN_MILLIS - EPSILON);
 
   // No guarantees from timers means no guarantees on buckets.
   // But we can guarantee it's only two samples.
@@ -235,12 +237,22 @@ add_task(async function test_gifft_timespan() {
   Glean.testOnly.mirrorTime.stop();
 
   const NANOS_IN_MILLIS = 1e6;
+  // bug 1701949 - Sleep gets close, but sometimes doesn't wait long enough.
+  const EPSILON = 40000;
   Assert.greater(
     Glean.testOnly.mirrorTime.testGetValue(),
-    10 * NANOS_IN_MILLIS
+    10 * NANOS_IN_MILLIS - EPSILON
   );
   // Mirrored to milliseconds.
   Assert.greaterOrEqual(scalarValue("telemetry.test.mirror_for_timespan"), 10);
+});
+
+add_task(async function test_gifft_timespan_raw() {
+  Glean.testOnly.mirrorTimeNanos.setRaw(15 /*ns*/);
+
+  Assert.equal(15, Glean.testOnly.mirrorTimeNanos.testGetValue());
+  // setRaw, unlike start/stop, mirrors the raw value directly.
+  Assert.equal(scalarValue("telemetry.test.mirror_for_timespan_nanos"), 15);
 });
 
 add_task(async function test_gifft_labeled_boolean() {
@@ -280,4 +292,10 @@ add_task(async function test_gifft_labeled_boolean() {
     },
     value
   );
+});
+
+add_task(function test_gifft_boolean() {
+  Glean.testOnly.meaningOfLife.set(42);
+  Assert.equal(42, Glean.testOnly.meaningOfLife.testGetValue());
+  Assert.equal(42, scalarValue("telemetry.test.mirror_for_quantity"));
 });

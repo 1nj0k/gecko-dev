@@ -571,6 +571,7 @@ nsDisplayListBuilder::nsDisplayListBuilder(nsIFrame* aReferenceFrame,
       mUsedAGRBudget(0),
       mDirtyRect(-1, -1, -1, -1),
       mGlassDisplayItem(nullptr),
+      mHasGlassItemDuringPartial(false),
       mCaretFrame(nullptr),
       mScrollInfoItemsForHoisting(nullptr),
       mFirstClipChainToDestroy(nullptr),
@@ -616,7 +617,8 @@ nsDisplayListBuilder::nsDisplayListBuilder(nsIFrame* aReferenceFrame,
       mBuildAsyncZoomContainer(false),
       mContainsBackdropFilter(false),
       mIsRelativeToLayoutViewport(false),
-      mUseOverlayScrollbars(false) {
+      mUseOverlayScrollbars(false),
+      mAlwaysLayerizeScrollbars(false) {
   MOZ_COUNT_CTOR(nsDisplayListBuilder);
 
   mBuildCompositorHitTestInfo = mAsyncPanZoomEnabled && IsForPainting();
@@ -625,6 +627,9 @@ nsDisplayListBuilder::nsDisplayListBuilder(nsIFrame* aReferenceFrame,
 
   mUseOverlayScrollbars =
       (LookAndFeel::GetInt(LookAndFeel::IntID::UseOverlayScrollbars) != 0);
+
+  mAlwaysLayerizeScrollbars =
+      StaticPrefs::layout_scrollbars_always_layerize_track();
 
   static_assert(
       static_cast<uint32_t>(DisplayItemType::TYPE_MAX) < (1 << TYPE_BITS),
@@ -872,11 +877,19 @@ bool nsDisplayListBuilder::ShouldRebuildDisplayListDueToPrefChange() {
   mUseOverlayScrollbars =
       (LookAndFeel::GetInt(LookAndFeel::IntID::UseOverlayScrollbars) != 0);
 
+  bool alwaysLayerizedScrollbarsLastTime = mAlwaysLayerizeScrollbars;
+  mAlwaysLayerizeScrollbars =
+      StaticPrefs::layout_scrollbars_always_layerize_track();
+
   if (didBuildAsyncZoomContainer != mBuildAsyncZoomContainer) {
     return true;
   }
 
   if (hadOverlayScrollbarsLastTime != mUseOverlayScrollbars) {
+    return true;
+  }
+
+  if (alwaysLayerizedScrollbarsLastTime != mAlwaysLayerizeScrollbars) {
     return true;
   }
 
@@ -2263,7 +2276,7 @@ LayerManager* nsDisplayListBuilder::GetWidgetLayerManager(nsView** aView) {
 Layer* GetLayerForRootMetadata(Layer* aRootLayer, ViewID aRootScrollId) {
   Layer* asyncZoomContainer = DepthFirstSearch<ForwardIterator>(
       aRootLayer, [aRootScrollId](Layer* aLayer) {
-        if (auto id = aLayer->IsAsyncZoomContainer()) {
+        if (auto id = aLayer->GetAsyncZoomContainerId()) {
           return *id == aRootScrollId;
         }
         return false;
@@ -2322,7 +2335,7 @@ FrameLayerBuilder* nsDisplayList::BuildLayers(nsDisplayListBuilder* aBuilder,
     ContainerLayerParameters containerParameters(resolutionX, resolutionY);
 
     {
-      PaintTelemetry::AutoRecord record(PaintTelemetry::Metric::Layerization);
+      const auto start = TimeStamp::Now();
 
       root = layerBuilder->BuildContainerLayerFor(aBuilder, aLayerManager,
                                                   frame, nullptr, this,
@@ -2330,11 +2343,10 @@ FrameLayerBuilder* nsDisplayList::BuildLayers(nsDisplayListBuilder* aBuilder,
 
       aBuilder->NotifyAndClearScrollFrames();
 
-      if (!record.GetStart().IsNull() &&
-          StaticPrefs::layers_acceleration_draw_fps()) {
+      if (StaticPrefs::layers_acceleration_draw_fps()) {
         if (PaintTiming* pt =
                 ClientLayerManager::MaybeGetPaintTiming(aLayerManager)) {
-          pt->flbMs() = (TimeStamp::Now() - record.GetStart()).ToMilliseconds();
+          pt->flbMs() = (TimeStamp::Now() - start).ToMilliseconds();
         }
       }
     }
@@ -2522,8 +2534,12 @@ already_AddRefed<LayerManager> nsDisplayList::PaintRoot(
   }
 
   if (!sent) {
+    const auto start = TimeStamp::Now();
+
     FrameLayerBuilder* layerBuilder =
         BuildLayers(aBuilder, layerManager, aFlags, widgetTransaction);
+
+    Telemetry::AccumulateTimeDelta(Telemetry::PAINT_BUILD_LAYERS_TIME, start);
 
     if (!layerBuilder) {
       layerManager->SetUserData(&gLayerManagerLayerBuilder, nullptr);
@@ -4755,15 +4771,34 @@ nsRect nsDisplayOutline::GetBounds(nsDisplayListBuilder* aBuilder,
   return mFrame->InkOverflowRectRelativeToSelf() + ToReferenceFrame();
 }
 
+nsRect nsDisplayOutline::GetInnerRect() const {
+  nsRect* savedOutlineInnerRect =
+      mFrame->GetProperty(nsIFrame::OutlineInnerRectProperty());
+  if (savedOutlineInnerRect) {
+    return *savedOutlineInnerRect;
+  }
+
+  // FIXME bug 1221888
+  NS_ERROR("we should have saved a frame property");
+  return nsRect(nsPoint(), mFrame->GetSize());
+}
+
 void nsDisplayOutline::Paint(nsDisplayListBuilder* aBuilder, gfxContext* aCtx) {
   // TODO join outlines together
   MOZ_ASSERT(mFrame->StyleOutline()->ShouldPaintOutline(),
              "Should have not created a nsDisplayOutline!");
 
-  nsPoint offset = ToReferenceFrame();
-  nsCSSRendering::PaintOutline(
-      mFrame->PresContext(), *aCtx, mFrame, GetPaintRect(),
-      nsRect(offset, mFrame->GetSize()), mFrame->Style());
+  nsRect rect = GetInnerRect() + ToReferenceFrame();
+  nsPresContext* pc = mFrame->PresContext();
+  if (IsThemedOutline()) {
+    rect.Inflate(mFrame->StyleOutline()->mOutlineOffset.ToAppUnits());
+    pc->Theme()->DrawWidgetBackground(
+        aCtx, mFrame, StyleAppearance::FocusOutline, rect, GetPaintRect());
+    return;
+  }
+
+  nsCSSRendering::PaintNonThemedOutline(pc, *aCtx, mFrame, GetPaintRect(), rect,
+                                        mFrame->Style());
 }
 
 bool nsDisplayOutline::IsThemedOutline() const {
@@ -4784,16 +4819,19 @@ bool nsDisplayOutline::CreateWebRenderCommands(
     const StackingContextHelper& aSc,
     mozilla::layers::RenderRootStateManager* aManager,
     nsDisplayListBuilder* aDisplayListBuilder) {
+  nsPresContext* pc = mFrame->PresContext();
+  nsRect rect = GetInnerRect() + ToReferenceFrame();
   if (IsThemedOutline()) {
-    return false;
+    rect.Inflate(mFrame->StyleOutline()->mOutlineOffset.ToAppUnits());
+    return pc->Theme()->CreateWebRenderCommandsForWidget(
+        aBuilder, aResources, aSc, aManager, mFrame,
+        StyleAppearance::FocusOutline, rect);
   }
 
-  nsPoint offset = ToReferenceFrame();
-
-  mozilla::Maybe<nsCSSBorderRenderer> borderRenderer =
-      nsCSSRendering::CreateBorderRendererForOutline(
-          mFrame->PresContext(), nullptr, mFrame, GetPaintRect(),
-          nsRect(offset, mFrame->GetSize()), mFrame->Style());
+  Maybe<nsCSSBorderRenderer> borderRenderer =
+      nsCSSRendering::CreateBorderRendererForNonThemedOutline(
+          pc, /* aDrawTarget = */ nullptr, mFrame, GetPaintRect(), rect,
+          mFrame->Style());
 
   if (!borderRenderer) {
     // No border renderer means "there is no outline".
@@ -7240,7 +7278,7 @@ already_AddRefed<Layer> nsDisplayAsyncZoom::BuildLayer(
   RefPtr<Layer> layer =
       nsDisplayOwnLayer::BuildLayer(aBuilder, aManager, containerParameters);
 
-  layer->SetIsAsyncZoomContainer(Some(mViewID));
+  layer->SetAsyncZoomContainerId(Some(mViewID));
 
   layer->SetPostScale(1.0f / presShell->GetResolution(),
                       1.0f / presShell->GetResolution());
@@ -9428,7 +9466,7 @@ static Maybe<wr::WrClipId> CreateSimpleClipRegion(
 
       nscoord radii[8] = {0};
 
-      if (ShapeUtils::ComputeInsetRadii(shape, insetRect, refBox, radii)) {
+      if (ShapeUtils::ComputeInsetRadii(shape, refBox, radii)) {
         clipRegions.AppendElement(
             wr::ToComplexClipRegion(insetRect, radii, appUnitsPerDevPixel));
       }
@@ -9479,6 +9517,43 @@ static Maybe<wr::WrClipId> CreateSimpleClipRegion(
   return Some(clipId);
 }
 
+static void FillPolygonDataForDisplayItem(
+    const nsDisplayMasksAndClipPaths& aDisplayItem,
+    nsTArray<wr::LayoutPoint>& aPoints, wr::FillRule& aFillRule) {
+  nsIFrame* frame = aDisplayItem.Frame();
+  const auto* style = frame->StyleSVGReset();
+  bool isPolygon = style->HasClipPath() && style->mClipPath.IsShape() &&
+                   style->mClipPath.AsShape()._0->IsPolygon();
+  if (!isPolygon) {
+    return;
+  }
+
+  const auto& clipPath = style->mClipPath;
+  const auto& shape = *clipPath.AsShape()._0;
+  const nsRect refBox =
+      nsLayoutUtils::ComputeGeometryBox(frame, clipPath.AsShape()._1);
+
+  // We only fill polygon data for polygons that are below a complexity
+  // limit.
+  nsTArray<nsPoint> vertices =
+      ShapeUtils::ComputePolygonVertices(shape, refBox);
+  if (vertices.Length() > wr::POLYGON_CLIP_VERTEX_MAX) {
+    return;
+  }
+
+  auto appUnitsPerDevPixel = frame->PresContext()->AppUnitsPerDevPixel();
+
+  for (size_t i = 0; i < vertices.Length(); ++i) {
+    wr::LayoutPoint point = wr::ToLayoutPoint(
+        LayoutDevicePoint::FromAppUnits(vertices[i], appUnitsPerDevPixel));
+    aPoints.AppendElement(point);
+  }
+
+  aFillRule = (shape.AsPolygon().fill == StyleFillRule::Nonzero)
+                  ? wr::FillRule::Nonzero
+                  : wr::FillRule::Evenodd;
+}
+
 static Maybe<wr::WrClipId> CreateWRClipPathAndMasks(
     nsDisplayMasksAndClipPaths* aDisplayItem, const LayoutDeviceRect& aBounds,
     wr::IpcResourceUpdateQueue& aResources, wr::DisplayListBuilder& aBuilder,
@@ -9494,7 +9569,14 @@ static Maybe<wr::WrClipId> CreateWRClipPathAndMasks(
     return Nothing();
   }
 
-  wr::WrClipId clipId = aBuilder.DefineImageMaskClip(mask.ref());
+  // We couldn't create a simple clip region, but before we create an image
+  // mask clip, see if we can get a polygon clip to add to it.
+  nsTArray<wr::LayoutPoint> points;
+  wr::FillRule fillRule = wr::FillRule::Nonzero;
+  FillPolygonDataForDisplayItem(*aDisplayItem, points, fillRule);
+
+  wr::WrClipId clipId =
+      aBuilder.DefineImageMaskClip(mask.ref(), points, fillRule);
 
   return Some(clipId);
 }
@@ -10017,9 +10099,6 @@ void nsDisplayListCollection::SerializeWithCorrectZOrder(
 namespace mozilla {
 
 uint32_t PaintTelemetry::sPaintLevel = 0;
-uint32_t PaintTelemetry::sMetricLevel = 0;
-EnumeratedArray<PaintTelemetry::Metric, PaintTelemetry::Metric::COUNT, double>
-    PaintTelemetry::sMetrics;
 
 PaintTelemetry::AutoRecordPaint::AutoRecordPaint() {
   // Don't record nested paints.
@@ -10027,10 +10106,6 @@ PaintTelemetry::AutoRecordPaint::AutoRecordPaint() {
     return;
   }
 
-  // Reset metrics for a new paint.
-  for (auto& metric : sMetrics) {
-    metric = 0.0;
-  }
   mStart = TimeStamp::Now();
 }
 
@@ -10051,66 +10126,6 @@ PaintTelemetry::AutoRecordPaint::~AutoRecordPaint() {
   // Record the total time.
   Telemetry::Accumulate(Telemetry::CONTENT_PAINT_TIME,
                         static_cast<uint32_t>(totalMs));
-
-  // Helpers for recording large/small paints.
-  auto recordLarge = [=](const nsCString& aKey, double aDurationMs) -> void {
-    MOZ_ASSERT(aDurationMs <= totalMs);
-    uint32_t amount = static_cast<int32_t>((aDurationMs / totalMs) * 100.0);
-    Telemetry::Accumulate(Telemetry::CONTENT_LARGE_PAINT_PHASE_WEIGHT, aKey,
-                          amount);
-  };
-  auto recordSmall = [=](const nsCString& aKey, double aDurationMs) -> void {
-    MOZ_ASSERT(aDurationMs <= totalMs);
-    uint32_t amount = static_cast<int32_t>((aDurationMs / totalMs) * 100.0);
-    Telemetry::Accumulate(Telemetry::CONTENT_SMALL_PAINT_PHASE_WEIGHT, aKey,
-                          amount);
-  };
-
-  double dlMs = sMetrics[Metric::DisplayList];
-  double flbMs = sMetrics[Metric::Layerization];
-  double frMs = sMetrics[Metric::FlushRasterization];
-  double rMs = sMetrics[Metric::Rasterization];
-
-  // If the total time was >= 16ms, then it's likely we missed a frame due to
-  // painting. We bucket these metrics separately.
-  if (totalMs >= 16.0) {
-    recordLarge("dl"_ns, dlMs);
-    recordLarge("flb"_ns, flbMs);
-    recordLarge("fr"_ns, frMs);
-    recordLarge("r"_ns, rMs);
-  } else {
-    recordSmall("dl"_ns, dlMs);
-    recordSmall("flb"_ns, flbMs);
-    recordSmall("fr"_ns, frMs);
-    recordSmall("r"_ns, rMs);
-  }
-
-  Telemetry::Accumulate(Telemetry::PAINT_BUILD_LAYERS_TIME, flbMs);
-}
-
-PaintTelemetry::AutoRecord::AutoRecord(Metric aMetric) : mMetric(aMetric) {
-  // Don't double-record anything nested.
-  if (sMetricLevel++ > 0) {
-    return;
-  }
-
-  // Don't record inside nested paints, or outside of paints.
-  if (sPaintLevel != 1) {
-    return;
-  }
-
-  mStart = TimeStamp::Now();
-}
-
-PaintTelemetry::AutoRecord::~AutoRecord() {
-  MOZ_ASSERT(sMetricLevel != 0);
-
-  sMetricLevel--;
-  if (mStart.IsNull()) {
-    return;
-  }
-
-  sMetrics[mMetric] += (TimeStamp::Now() - mStart).ToMilliseconds();
 }
 
 }  // namespace mozilla

@@ -125,7 +125,7 @@ nsresult HTMLEditor::LoadHTML(const nsAString& aInputString) {
   }
 
   // Delete Selection, but only if it isn't collapsed, see bug #106269
-  if (!SelectionRefPtr()->IsCollapsed()) {
+  if (!SelectionRef().IsCollapsed()) {
     nsresult rv = DeleteSelectionAsSubAction(eNone, eStrip);
     if (NS_FAILED(rv)) {
       NS_WARNING(
@@ -135,7 +135,7 @@ nsresult HTMLEditor::LoadHTML(const nsAString& aInputString) {
   }
 
   // Get the first range in the selection, for context:
-  RefPtr<const nsRange> range = SelectionRefPtr()->GetRangeAt(0);
+  RefPtr<const nsRange> range = SelectionRef().GetRangeAt(0);
   if (NS_WARN_IF(!range)) {
     return NS_ERROR_FAILURE;
   }
@@ -337,7 +337,8 @@ class MOZ_STACK_CLASS
 HTMLBRElement*
 HTMLEditor::HTMLWithContextInserter::GetInvisibleBRElementAtPoint(
     const EditorDOMPoint& aPointToInsert) const {
-  WSRunScanner wsRunScannerAtInsertionPoint(mHTMLEditor, aPointToInsert);
+  WSRunScanner wsRunScannerAtInsertionPoint(mHTMLEditor.GetActiveEditingHost(),
+                                            aPointToInsert);
   if (wsRunScannerAtInsertionPoint.GetEndReasonContent() &&
       wsRunScannerAtInsertionPoint.GetEndReasonContent()->IsHTMLElement(
           nsGkAtoms::br) &&
@@ -399,14 +400,15 @@ HTMLEditor::HTMLWithContextInserter::GetNewCaretPointAfterInsertingHTML(
 
   // Make sure we don't end up with selection collapsed after an invisible
   // `<br>` element.
-  WSRunScanner wsRunScannerAtCaret(mHTMLEditor, pointToPutCaret);
+  Element* editingHost = mHTMLEditor.GetActiveEditingHost();
+  WSRunScanner wsRunScannerAtCaret(editingHost, pointToPutCaret);
   if (wsRunScannerAtCaret
           .ScanPreviousVisibleNodeOrBlockBoundaryFrom(pointToPutCaret)
           .ReachedBRElement() &&
       !mHTMLEditor.IsVisibleBRElement(
           wsRunScannerAtCaret.GetStartReasonContent())) {
     WSRunScanner wsRunScannerAtStartReason(
-        mHTMLEditor,
+        editingHost,
         EditorDOMPoint(wsRunScannerAtCaret.GetStartReasonContent()));
     WSScanResult backwardScanFromPointToCaretResult =
         wsRunScannerAtStartReason.ScanPreviousVisibleNodeOrBlockBoundaryFrom(
@@ -540,7 +542,7 @@ nsresult HTMLEditor::HTMLWithContextInserter::Run(
   // Are there any table elements in the list?
   // check for table cell selection mode
   bool cellSelectionMode =
-      HTMLEditUtils::IsInTableCellSelectionMode(*mHTMLEditor.SelectionRefPtr());
+      HTMLEditUtils::IsInTableCellSelectionMode(mHTMLEditor.SelectionRef());
 
   if (cellSelectionMode) {
     // do we have table content to paste?  If so, we want to delete
@@ -565,7 +567,7 @@ nsresult HTMLEditor::HTMLWithContextInserter::Run(
       EditResult result =
           MOZ_KnownLive(mHTMLEditor)
               .ClearStyleAt(
-                  EditorDOMPoint(mHTMLEditor.SelectionRefPtr()->AnchorRef()),
+                  EditorDOMPoint(mHTMLEditor.SelectionRef().AnchorRef()),
                   nullptr, nullptr, SpecifiedStyle::Preserve);
       if (result.Failed()) {
         NS_WARNING("HTMLEditor::ClearStyleAt() failed");
@@ -588,7 +590,7 @@ nsresult HTMLEditor::HTMLWithContextInserter::Run(
     }
     // collapse selection to beginning of deleted table content
     IgnoredErrorResult ignoredError;
-    MOZ_KnownLive(mHTMLEditor.SelectionRefPtr())->CollapseToStart(ignoredError);
+    mHTMLEditor.SelectionRef().CollapseToStart(ignoredError);
     NS_WARNING_ASSERTION(!ignoredError.Failed(),
                          "Selection::Collapse() failed, but ignored");
   }
@@ -615,7 +617,7 @@ nsresult HTMLEditor::HTMLWithContextInserter::Run(
                        "EditorBase::EnsureNoPaddingBRElementForEmptyEditor() "
                        "failed, but ignored");
 
-  if (NS_SUCCEEDED(rv) && mHTMLEditor.SelectionRefPtr()->IsCollapsed()) {
+  if (NS_SUCCEEDED(rv) && mHTMLEditor.SelectionRef().IsCollapsed()) {
     nsresult rv =
         MOZ_KnownLive(mHTMLEditor).EnsureCaretNotAfterPaddingBRElement();
     if (NS_WARN_IF(rv == NS_ERROR_EDITOR_DESTROYED)) {
@@ -638,7 +640,7 @@ nsresult HTMLEditor::HTMLWithContextInserter::Run(
   // Adjust position based on the first node we are going to insert.
   EditorDOMPoint pointToInsert = mHTMLEditor.GetBetterInsertionPointFor(
       arrayOfTopMostChildContents[0],
-      EditorBase::GetStartPoint(*mHTMLEditor.SelectionRefPtr()));
+      EditorBase::GetStartPoint(mHTMLEditor.SelectionRef()));
   if (!pointToInsert.IsSet()) {
     NS_WARNING("HTMLEditor::GetBetterInsertionPointFor() failed");
     return NS_ERROR_FAILURE;
@@ -819,7 +821,7 @@ HTMLEditor::HTMLWithContextInserter::InsertContents(
           //     is not proper child of the parent element, or current node
           //     is a list element.
           if (HTMLEditUtils::IsListItem(pointToInsert.GetContainer()) &&
-              mHTMLEditor.IsEmptyNode(*pointToInsert.GetContainer(), true)) {
+              HTMLEditUtils::IsEmptyNode(*pointToInsert.GetContainer())) {
             NS_WARNING_ASSERTION(pointToInsert.GetContainerParent(),
                                  "Insertion point is out of the DOM tree");
             if (pointToInsert.GetContainerParent()) {
@@ -2341,7 +2343,7 @@ nsresult HTMLEditor::PasteAsQuotationAsAction(int32_t aClipboardType,
                        "EditorBase::EnsureNoPaddingBRElementForEmptyEditor() "
                        "failed, but ignored");
 
-  if (NS_SUCCEEDED(rv) && SelectionRefPtr()->IsCollapsed()) {
+  if (NS_SUCCEEDED(rv) && SelectionRef().IsCollapsed()) {
     nsresult rv = EnsureCaretNotAfterPaddingBRElement();
     if (NS_WARN_IF(rv == NS_ERROR_EDITOR_DESTROYED)) {
       return EditorBase::ToGenericNSResult(NS_ERROR_EDITOR_DESTROYED);
@@ -2508,7 +2510,7 @@ nsresult HTMLEditor::InsertWithQuotationsAsSubAction(
                        "EditorBase::EnsureNoPaddingBRElementForEmptyEditor() "
                        "failed, but ignored");
 
-  if (NS_SUCCEEDED(rv) && SelectionRefPtr()->IsCollapsed()) {
+  if (NS_SUCCEEDED(rv) && SelectionRef().IsCollapsed()) {
     nsresult rv = EnsureCaretNotAfterPaddingBRElement();
     if (NS_WARN_IF(rv == NS_ERROR_EDITOR_DESTROYED)) {
       return NS_ERROR_EDITOR_DESTROYED;
@@ -2743,7 +2745,7 @@ nsresult HTMLEditor::InsertAsPlaintextQuotation(const nsAString& aQuotedText,
                        "EditorBase::EnsureNoPaddingBRElementForEmptyEditor() "
                        "failed, but ignored");
 
-  if (NS_SUCCEEDED(rv) && SelectionRefPtr()->IsCollapsed()) {
+  if (NS_SUCCEEDED(rv) && SelectionRef().IsCollapsed()) {
     nsresult rv = EnsureCaretNotAfterPaddingBRElement();
     if (NS_WARN_IF(rv == NS_ERROR_EDITOR_DESTROYED)) {
       return NS_ERROR_EDITOR_DESTROYED;
@@ -3000,7 +3002,7 @@ nsresult HTMLEditor::InsertAsCitedQuotationInternal(
                        "EditorBase::EnsureNoPaddingBRElementForEmptyEditor() "
                        "failed, but ignored");
 
-  if (NS_SUCCEEDED(rv) && SelectionRefPtr()->IsCollapsed()) {
+  if (NS_SUCCEEDED(rv) && SelectionRef().IsCollapsed()) {
     nsresult rv = EnsureCaretNotAfterPaddingBRElement();
     if (NS_WARN_IF(rv == NS_ERROR_EDITOR_DESTROYED)) {
       return NS_ERROR_EDITOR_DESTROYED;

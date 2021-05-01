@@ -7,6 +7,9 @@
 // This is loaded into chrome windows with the subscript loader. If you need to
 // define globals, wrap in a block to prevent leaking onto `window`.
 {
+  const { XPCOMUtils } = ChromeUtils.import(
+    "resource://gre/modules/XPCOMUtils.jsm"
+  );
   const { Services } = ChromeUtils.import(
     "resource://gre/modules/Services.jsm"
   );
@@ -24,17 +27,24 @@
       this._insertElementFn = insertElementFn;
       this._animating = false;
       this.currentNotification = null;
+
+      XPCOMUtils.defineLazyPreferenceGetter(
+        this,
+        "gProton",
+        "browser.proton.enabled",
+        false
+      );
     }
 
     get stack() {
       if (!this._stack) {
         let stack;
         stack = document.createXULElement(
-          this.protonInfobarsEnabled ? "vbox" : "legacy-stack"
+          this.gProton ? "vbox" : "legacy-stack"
         );
         stack._notificationBox = this;
         stack.className = "notificationbox-stack";
-        if (!this.protonInfobarsEnabled) {
+        if (!this.gProton) {
           stack.appendChild(document.createXULElement("spacer"));
         }
         stack.addEventListener("transitionend", event => {
@@ -64,13 +74,11 @@
       }
 
       var closedNotification = this._closedNotification;
-      var notifications = this.stack.getElementsByTagName(
-        this.protonInfobarsEnabled ? "notification-message" : "notification"
-      );
-      return Array.prototype.filter.call(
-        notifications,
-        n => n != closedNotification
-      );
+      var notifications = [
+        ...this.stack.getElementsByTagName("notification"),
+        ...this.stack.getElementsByTagName("notification-message"),
+      ];
+      return notifications.filter(n => n != closedNotification);
     }
 
     getNotificationWithValue(aValue) {
@@ -148,8 +156,7 @@
       aPriority,
       aButtons,
       aEventCallback,
-      aNotificationIs,
-      aFtlFilePaths
+      aNotificationIs
     ) {
       if (
         aPriority < this.PRIORITY_SYSTEM ||
@@ -158,22 +165,11 @@
         throw new Error("Invalid notification priority " + aPriority);
       }
 
-      // check for where the notification should be inserted according to
-      // priority. If two are equal, the existing one appears on top.
-      var notifications = this.allNotifications;
-      var insertPos = null;
-      for (var n = notifications.length - 1; n >= 0; n--) {
-        if (notifications[n].priority < aPriority) {
-          break;
-        }
-        insertPos = notifications[n];
-      }
-
       MozXULElement.insertFTLIfNeeded("toolkit/global/notification.ftl");
 
       // Create the Custom Element and connect it to the document immediately.
       var newitem;
-      if (this.protonInfobarsEnabled) {
+      if (this.gProton && !aNotificationIs) {
         if (!customElements.get("notification-message")) {
           // There's some weird timing stuff when this element is created at
           // script load time, we don't need it until now anyway so be lazy.
@@ -181,16 +177,33 @@
         }
         newitem = document.createElement("notification-message");
         newitem.setAttribute("message-bar-type", "infobar");
-        if (aFtlFilePaths) {
-          newitem.addFtl(aFtlFilePaths);
-        }
       } else {
         newitem = document.createXULElement(
           "notification",
           aNotificationIs ? { is: aNotificationIs } : {}
         );
       }
-      this.stack.insertBefore(newitem, insertPos);
+
+      if (this.gProton) {
+        // Append or prepend notification, based on stack preference.
+        if (this.stack.hasAttribute("prepend-notifications")) {
+          this.stack.prepend(newitem);
+        } else {
+          this.stack.append(newitem);
+        }
+      } else {
+        // check for where the notification should be inserted according to
+        // priority. If two are equal, the existing one appears on top.
+        var notifications = this.allNotifications;
+        var insertPos = null;
+        for (var n = notifications.length - 1; n >= 0; n--) {
+          if (notifications[n].priority < aPriority) {
+            break;
+          }
+          insertPos = notifications[n];
+        }
+        this.stack.insertBefore(newitem, insertPos);
+      }
 
       // Custom notification classes may not have the messageText property.
       if (newitem.messageText) {
@@ -208,7 +221,7 @@
       }
       newitem.setAttribute("value", aValue);
 
-      if (aImage && !this.protonInfobarsEnabled) {
+      if (aImage && !this.gProton) {
         newitem.messageImage.setAttribute("src", aImage);
       }
       newitem.eventCallback = aEventCallback;
@@ -228,7 +241,10 @@
         newitem.setAttribute("type", "warning");
       }
 
-      if (!insertPos) {
+      // Animate the notification for proton (all notifications visible)
+      // or if this isn't proton and this is the visible notification (it
+      // was inserted at the top of the stack).
+      if (this.gProton || !insertPos) {
         newitem.style.display = "block";
         newitem.style.position = "fixed";
         newitem.style.top = "100%";
@@ -249,7 +265,7 @@
       if (!aItem.parentNode) {
         return;
       }
-      if (this.protonInfobarsEnabled) {
+      if (this.gProton) {
         this.currentNotification = aItem;
         this.removeCurrentNotification(aSkipAnimation);
       } else if (aItem == this.currentNotification) {
@@ -263,7 +279,7 @@
       if (aChild.eventCallback) {
         aChild.eventCallback("removed");
       }
-      this.stack.removeChild(aChild);
+      aChild.remove();
 
       // make sure focus doesn't get lost (workaround for bug 570835)
       if (!Services.focus.getFocusedElementForWindow(window, false, {})) {
@@ -364,13 +380,6 @@
         }
       }
     }
-
-    get protonInfobarsEnabled() {
-      return Services.prefs.getBoolPref(
-        "browser.proton.infobars.enabled",
-        false
-      );
-    }
   };
 
   // These are defined on the instance prototype for backwards compatibility.
@@ -422,6 +431,8 @@
         ["messageImage", ".messageImage"],
         ["messageText", ".messageText"],
         ["spacer", "spacer"],
+        ["buttonContainer", ".messageDetails"],
+        ["closeButton", ".messageCloseButton"],
       ]) {
         this[propertyName] = this.querySelector(selector);
       }
@@ -454,6 +465,7 @@
           });
           buttonElem.setAttribute("href", link);
           buttonElem.classList.add("notification-link");
+          buttonElem.onclick = (...args) => this._doButtonCommand(...args);
         } else {
           buttonElem = document.createXULElement(
             "button",
@@ -545,13 +557,6 @@
         }
       }
     }
-
-    get protonInfobarsEnabled() {
-      return Services.prefs.getBoolPref(
-        "browser.proton.infobars.enabled",
-        false
-      );
-    }
   };
 
   customElements.define("notification", MozElements.Notification);
@@ -561,10 +566,21 @@
     // gets handled automatically if needed.
     class NotificationMessage extends document.createElement("message-bar")
       .constructor {
+      constructor() {
+        super();
+        this.persistence = 0;
+        this.priority = 0;
+        this.timeout = 0;
+      }
+
       connectedCallback() {
         this.toggleAttribute("dismissable", true);
         this.closeButton.classList.add("notification-close");
-        this.shadowRoot.querySelector(".container").classList.add("infobar");
+
+        this.container = this.shadowRoot.querySelector(".container");
+        this.container.classList.add("infobar");
+        this.setAlertRole();
+
         let messageContent = this.shadowRoot.querySelector(".content");
         messageContent.classList.add("notification-content");
 
@@ -576,8 +592,11 @@
         this.buttonContainer = document.createElement("span");
         this.buttonContainer.classList.add("notification-button-container");
 
+        this.messageImage = this.shadowRoot.querySelector(".icon");
+
         messageContent.append(this.messageText, this.buttonContainer);
         this.shadowRoot.addEventListener("click", this);
+        this.shadowRoot.addEventListener("command", this);
       }
 
       disconnectedCallback() {
@@ -586,39 +605,37 @@
         }
       }
 
+      get control() {
+        return this.closest(".notificationbox-stack")._notificationBox;
+      }
+
       close() {
-        this.closest(
-          ".notificationbox-stack"
-        )._notificationBox.removeNotification(this);
+        if (!this.parentNode) {
+          return;
+        }
+        this.control.removeNotification(this);
       }
 
-      addFtl(filepaths) {
-        for (let filepath of filepaths) {
-          let link = document.createElement("link");
-          link.setAttribute("rel", "localization");
-          link.href = filepath;
-          this.shadowRoot.append(link);
-        }
-        document.l10n.connectRoot(this.shadowRoot);
-      }
-
-      _insertNotificationFtl() {
-        if (!this._insertedNotificationFtl) {
-          this._insertedNotificationFtl = true;
-          this.addFtl(["toolkit/global/notification.ftl"]);
-        }
+      setAlertRole() {
+        // Wait a little for this to render before setting the role for more
+        // consistent alerts to screen readers.
+        this.container.removeAttribute("role");
+        window.requestAnimationFrame(() => {
+          window.requestAnimationFrame(() => {
+            this.container.setAttribute("role", "alert");
+          });
+        });
       }
 
       handleEvent(e) {
-        if (e.type == "click" && "buttonInfo" in e.target) {
+        if (e.type == "click" && e.target.localName != "label") {
+          return;
+        }
+
+        if ("buttonInfo" in e.target) {
           let { buttonInfo } = e.target;
           let { callback, popup } = buttonInfo;
-          if (callback) {
-            if (!callback(this, buttonInfo, e.target, e)) {
-              this.close();
-            }
-            e.stopPropagation();
-          } else if (popup) {
+          if (popup) {
             document
               .getElementById(popup)
               .openPopup(
@@ -631,12 +648,18 @@
                 e
               );
             e.stopPropagation();
+          } else if (callback) {
+            if (!callback(this, buttonInfo, e.target, e)) {
+              this.close();
+            }
+            e.stopPropagation();
           }
         }
       }
 
       set label(value) {
         this.messageText.textContent = value;
+        this.setAlertRole();
       }
 
       setButtons(buttons) {
@@ -651,7 +674,6 @@
             if (!button.label && !localeId) {
               localeId = "notification-learnmore-default-label";
             }
-            this._insertNotificationFtl();
           }
 
           let buttonElem;
@@ -676,7 +698,7 @@
           if (localeId) {
             document.l10n.setAttributes(buttonElem, localeId);
           } else {
-            buttonElem.textContent = button.label;
+            buttonElem.setAttribute(link ? "value" : "label", button.label);
             if (typeof button.accessKey == "string") {
               buttonElem.setAttribute("accesskey", button.accessKey);
             }

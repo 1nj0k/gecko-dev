@@ -22,15 +22,18 @@ menupopup {
   --nested-margin: -3px;
 }
 
-@supports -moz-bool-pref("browser.proton.contextmenus.enabled") {
+@media (-moz-proton-contextmenus) {
 @media (-moz-windows-default-theme) and (-moz-os-version: windows-win10) {
   menupopup {
     /* Disable the default appearance so we can override the native styling. */
     appearance: none;
+    /* Force a rounded-rect dropshadow to appear. */
+    -moz-window-shadow: cliprounded;
 
     /* Prevent any background or border around the outside of the shadow. */
     background-color: transparent;
-    border-color: transparent;
+    border: none;
+    border-radius: 4px;
 
     /* Set this here rather than on the scrollbox so it is more easily
      * overridden by e.g. ContentSelectDropdown */
@@ -56,7 +59,7 @@ menupopup {
     padding-block: 4px;
 
     /* Prevent contained items from drawing over the border-radius. */
-    overflow: hidden;
+    overflow: clip;
   }
 }
 }
@@ -103,7 +106,7 @@ panel[type="arrow"][side="right"] {
   -moz-box-orient: vertical;
 }
 
-@supports not -moz-bool-pref("browser.proton.enabled") {
+@media not (-moz-proton) {
 @media (-moz-os-version: windows-win7) {
 .panel-arrowcontent {
   border-radius: 4px;
@@ -168,7 +171,7 @@ menulist > menupopup {
   background-color: Field;
 }
 
-@supports -moz-bool-pref("browser.proton.contextmenus.enabled") {
+@media (-moz-proton-contextmenus) {
 @media (-moz-windows-default-theme) and (-moz-os-version: windows-win10) {
   /* For Win10, the popup itself needs to have a transparent background because
      otherwise the background color would appear behind the drop shadow. */

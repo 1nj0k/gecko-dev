@@ -8,10 +8,6 @@
 
 #include "nsContentUtils.h"
 
-// nsNPAPIPluginInstance must be included before mozilla/dom/Document.h, which
-// is included in mozAutoDocUpdate.h.
-#include "nsNPAPIPluginInstance.h"
-
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -301,7 +297,6 @@
 #include "nsIObjectLoadingContent.h"
 #include "nsIObserver.h"
 #include "nsIObserverService.h"
-#include "nsIOfflineCacheUpdate.h"
 #include "nsIParser.h"
 #include "nsIParserUtils.h"
 #include "nsIPermissionManager.h"
@@ -344,7 +339,6 @@
 #include "nsMappedAttributes.h"
 #include "nsMargin.h"
 #include "nsMimeTypes.h"
-#include "nsNPAPIPluginInstance.h"
 #include "nsNameSpaceManager.h"
 #include "nsNetCID.h"
 #include "nsNetUtil.h"
@@ -1849,29 +1843,11 @@ void nsContentUtils::GetOfflineAppManifest(Document* aDocument, nsIURI** aURI) {
 }
 
 /* static */
-bool nsContentUtils::OfflineAppAllowed(nsIURI* aURI) {
-  nsCOMPtr<nsIOfflineCacheUpdateService> updateService =
-      components::OfflineCacheUpdate::Service();
-  if (!updateService) {
-    return false;
-  }
-
-  bool allowed;
-  nsresult rv = updateService->OfflineAppAllowedForURI(aURI, &allowed);
-  return NS_SUCCEEDED(rv) && allowed;
-}
+bool nsContentUtils::OfflineAppAllowed(nsIURI* aURI) { return false; }
 
 /* static */
 bool nsContentUtils::OfflineAppAllowed(nsIPrincipal* aPrincipal) {
-  nsCOMPtr<nsIOfflineCacheUpdateService> updateService =
-      components::OfflineCacheUpdate::Service();
-  if (!updateService) {
-    return false;
-  }
-
-  bool allowed;
-  nsresult rv = updateService->OfflineAppAllowed(aPrincipal, &allowed);
-  return NS_SUCCEEDED(rv) && allowed;
+  return false;
 }
 // Static
 bool nsContentUtils::IsErrorPage(nsIURI* aURI) {
@@ -6178,7 +6154,8 @@ nsresult nsContentUtils::DispatchXULCommand(nsIContent* aTarget, bool aTrusted,
                                             Event* aSourceEvent,
                                             PresShell* aPresShell, bool aCtrl,
                                             bool aAlt, bool aShift, bool aMeta,
-                                            uint16_t aInputSource) {
+                                            uint16_t aInputSource,
+                                            int16_t aButton) {
   NS_ENSURE_STATE(aTarget);
   Document* doc = aTarget->OwnerDoc();
   nsPresContext* presContext = doc->GetPresContext();
@@ -6187,8 +6164,8 @@ nsresult nsContentUtils::DispatchXULCommand(nsIContent* aTarget, bool aTrusted,
       new XULCommandEvent(doc, presContext, nullptr);
   xulCommand->InitCommandEvent(u"command"_ns, true, true,
                                nsGlobalWindowInner::Cast(doc->GetInnerWindow()),
-                               0, aCtrl, aAlt, aShift, aMeta, aSourceEvent,
-                               aInputSource, IgnoreErrors());
+                               0, aCtrl, aAlt, aShift, aMeta, aButton,
+                               aSourceEvent, aInputSource, IgnoreErrors());
 
   if (aPresShell) {
     nsEventStatus status = nsEventStatus_eIgnore;
@@ -6500,6 +6477,15 @@ PresShell* nsContentUtils::FindPresShellForDocument(const Document* aDocument) {
   return nullptr;
 }
 
+/* static */
+nsPresContext* nsContentUtils::FindPresContextForDocument(
+    const Document* aDocument) {
+  if (PresShell* presShell = FindPresShellForDocument(aDocument)) {
+    return presShell->GetPresContext();
+  }
+  return nullptr;
+}
+
 nsIWidget* nsContentUtils::WidgetForDocument(const Document* aDocument) {
   PresShell* presShell = FindPresShellForDocument(aDocument);
   if (!presShell) {
@@ -6625,7 +6611,7 @@ nsContentUtils::FindInternalContentViewer(const nsACString& aType,
       if (contractID.EqualsLiteral(CONTENT_DLF_CONTRACTID))
         *aLoaderType = TYPE_CONTENT;
       else if (contractID.EqualsLiteral(PLUGIN_DLF_CONTRACTID))
-        *aLoaderType = TYPE_PLUGIN;
+        *aLoaderType = TYPE_FALLBACK;
       else
         *aLoaderType = TYPE_UNKNOWN;
     }
@@ -6804,32 +6790,7 @@ bool nsContentUtils::HaveEqualPrincipals(Document* aDoc1, Document* aDoc2) {
 /* static */
 bool nsContentUtils::HasPluginWithUncontrolledEventDispatch(
     nsIContent* aContent) {
-#ifdef XP_MACOSX
-  // We control dispatch to all mac plugins.
   return false;
-#else
-  if (!aContent || !aContent->IsInComposedDoc()) {
-    return false;
-  }
-
-  nsCOMPtr<nsIObjectLoadingContent> olc = do_QueryInterface(aContent);
-  if (!olc) {
-    return false;
-  }
-
-  RefPtr<nsNPAPIPluginInstance> plugin = olc->GetPluginInstance();
-  if (!plugin) {
-    return false;
-  }
-
-  bool isWindowless = false;
-  nsresult res = plugin->IsWindowless(&isWindowless);
-  if (NS_FAILED(res)) {
-    return false;
-  }
-
-  return !isWindowless;
-#endif
 }
 
 /* static */
@@ -8154,7 +8115,7 @@ nsresult nsContentUtils::SendMouseEvent(
     return presShell->HandleEvent(view->GetFrame(), &event, false, &status);
   }
   if (StaticPrefs::test_events_async_enabled()) {
-    status = widget->DispatchInputEvent(&event);
+    status = widget->DispatchInputEvent(&event).mContentStatus;
   } else {
     nsresult rv = widget->DispatchEvent(&event, status);
     NS_ENSURE_SUCCESS(rv, rv);
@@ -9788,7 +9749,7 @@ static bool HtmlObjectContentSupportsDocument(const nsCString& aMimeType,
 
   if (supported != nsIWebNavigationInfo::UNSUPPORTED) {
     // Don't want to support plugins as documents
-    return supported != nsIWebNavigationInfo::PLUGIN;
+    return supported != nsIWebNavigationInfo::FALLBACK;
   }
 
   // Try a stream converter
@@ -9827,7 +9788,7 @@ uint32_t nsContentUtils::HtmlObjectContentTypeForMIMEType(
     return nsIObjectLoadingContent::TYPE_NULL;
   }
 
-  if (imgLoader::SupportImageWithMimeType(aMIMEType.get())) {
+  if (imgLoader::SupportImageWithMimeType(aMIMEType)) {
     return nsIObjectLoadingContent::TYPE_IMAGE;
   }
 
@@ -9841,11 +9802,10 @@ uint32_t nsContentUtils::HtmlObjectContentTypeForMIMEType(
     return nsIObjectLoadingContent::TYPE_DOCUMENT;
   }
 
-  bool isPlugin = nsPluginHost::GetSpecialType(aMIMEType) !=
-                  nsPluginHost::eSpecialType_None;
-  if (isPlugin) {
-    // ShouldPlay will handle checking for disabled plugins
-    return nsIObjectLoadingContent::TYPE_PLUGIN;
+  bool isSpecialPlugin = nsPluginHost::GetSpecialType(aMIMEType) !=
+                         nsPluginHost::eSpecialType_None;
+  if (isSpecialPlugin) {
+    return nsIObjectLoadingContent::TYPE_FALLBACK;
   }
 
   return nsIObjectLoadingContent::TYPE_NULL;
@@ -10243,15 +10203,20 @@ bool nsContentUtils::StringifyJSON(JSContext* aCx,
 bool nsContentUtils::
     HighPriorityEventPendingForTopLevelDocumentBeforeContentfulPaint(
         Document* aDocument) {
-  if (!aDocument || aDocument->IsLoadedAsData()) {
-    return false;
-  }
+  MOZ_ASSERT(XRE_IsContentProcess(),
+             "This function only makes sense in content processes");
 
-  Document* topLevel = aDocument->GetTopLevelContentDocument();
-  return topLevel && topLevel->GetPresShell() &&
-         topLevel->GetPresShell()->GetPresContext() &&
-         !topLevel->GetPresShell()->GetPresContext()->HadContentfulPaint() &&
-         nsThreadManager::MainThreadHasPendingHighPriorityEvents();
+  if (aDocument && !aDocument->IsLoadedAsData()) {
+    if (nsPresContext* presContext = FindPresContextForDocument(aDocument)) {
+      MOZ_ASSERT(!presContext->IsChrome(),
+                 "Should never have a chrome PresContext in a content process");
+
+      return !presContext->GetInProcessRootContentDocumentPresContext()
+                  ->HadContentfulPaint() &&
+             nsThreadManager::MainThreadHasPendingHighPriorityEvents();
+    }
+  }
+  return false;
 }
 
 /* static */

@@ -2229,7 +2229,8 @@ class nsContentUtils {
       bool aAlt = false, bool aShift = false, bool aMeta = false,
       // Including MouseEventBinding here leads
       // to incude loops, unfortunately.
-      uint16_t inputSource = 0 /* MouseEvent_Binding::MOZ_SOURCE_UNKNOWN */);
+      uint16_t inputSource = 0 /* MouseEvent_Binding::MOZ_SOURCE_UNKNOWN */,
+      int16_t aButton = 0);
 
   static bool CheckMayLoad(nsIPrincipal* aPrincipal, nsIChannel* aChannel,
                            bool aAllowIfInheritsPrincipal);
@@ -2316,6 +2317,11 @@ class nsContentUtils {
    */
   static mozilla::PresShell* FindPresShellForDocument(
       const Document* aDocument);
+
+  /**
+   * Like FindPresShellForDocument, but returns the shell's PresContext instead.
+   */
+  static nsPresContext* FindPresContextForDocument(const Document* aDocument);
 
   /**
    * Returns the widget for this document if there is one. Looks at all ancestor
@@ -2510,7 +2516,7 @@ class nsContentUtils {
   enum ContentViewerType {
     TYPE_UNSUPPORTED,
     TYPE_CONTENT,
-    TYPE_PLUGIN,
+    TYPE_FALLBACK,
     TYPE_UNKNOWN
   };
 

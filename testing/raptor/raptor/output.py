@@ -228,7 +228,7 @@ class PerftestOutput(object):
 
         output_perf_data = True
         not_posting = "- not posting regular test results for perfherder"
-        if "gecko_profile" in extra_opts:
+        if "gecko-profile" in extra_opts:
             LOG.info("gecko profiling enabled %s" % not_posting)
             output_perf_data = False
         if test_type == "scenario":
@@ -1552,9 +1552,7 @@ class BrowsertimeOutput(PerftestOutput):
                     subtests, vals = self.parseAresSixOutput(test)
                 if "motionmark" in test["measurements"]:
                     subtests, vals = self.parseMotionmarkOutput(test)
-                if any(
-                    "youtube-playback" in key for key in test["measurements"].keys()
-                ):
+                if "youtube-playback" in test["name"]:
                     subtests, vals = self.parseYoutubePlaybackPerformanceOutput(test)
                 if "unity-webgl" in test["name"]:
                     subtests, vals = self.parseUnityWebGLOutput(test)

@@ -57,7 +57,6 @@ function openContextMenu(aMessage, aBrowser, aActor) {
     selectionInfo: data.selectionInfo,
     disableSetDesktopBackground: data.disableSetDesktopBackground,
     loginFillInfo: data.loginFillInfo,
-    parentAllowsMixedContent: data.parentAllowsMixedContent,
     userContextId: data.userContextId,
     webExtContextData: data.webExtContextData,
     cookieJarSettings: E10SUtils.deserializeCookieJarSettings(
@@ -211,7 +210,6 @@ class nsContextMenu {
     this.onAudio = context.onAudio;
     this.onCanvas = context.onCanvas;
     this.onCompletedImage = context.onCompletedImage;
-    this.onCTPPlugin = context.onCTPPlugin;
     this.onDRMMedia = context.onDRMMedia;
     this.onPiPVideo = context.onPiPVideo;
     this.onEditable = context.onEditable;
@@ -581,6 +579,19 @@ class nsContextMenu {
     // Send media URL (but not for canvas, since it's a big data: URL)
     this.showItem("context-sendimage", this.onImage || showBGImage);
 
+    // View Image Info defaults to false, user can enable
+    var showViewImageInfo =
+      this.onImage &&
+      Services.prefs.getBoolPref("browser.menu.showViewImageInfo", false);
+
+    this.showItem("context-viewimageinfo", showViewImageInfo);
+    // The image info popup is broken for WebExtension popups, since the browser
+    // is destroyed when the popup is closed.
+    this.setItemAttr(
+      "context-viewimageinfo",
+      "disabled",
+      this.webExtBrowserType === "popup"
+    );
     // Open the link to more details about the image. Does not apply to
     // background images.
     this.showItem(
@@ -940,8 +951,8 @@ class nsContextMenu {
   }
 
   initClickToPlayItems() {
-    this.showItem("context-ctp-play", this.onCTPPlugin);
-    this.showItem("context-ctp-hide", this.onCTPPlugin);
+    this.showItem("context-ctp-play", false);
+    this.showItem("context-ctp-hide", false);
   }
 
   initPasswordManagerItems() {
@@ -1025,9 +1036,10 @@ class nsContextMenu {
         "disabled",
         !enableGeneration
       );
-      this.showItem(
+      this.setItemAttr(
         "passwordmgr-items-separator",
-        showUseSavedLogin || showGenerate || showManage
+        "ensureHidden",
+        showUseSavedLogin || showGenerate || showManage ? null : true
       );
     }
   }
@@ -1225,26 +1237,7 @@ class nsContextMenu {
 
   // Open linked-to URL in a new tab.
   openLinkInTab(event) {
-    let referrerURI = this.contentData.documentURIObject;
-
-    // if its parent allows mixed content and the referring URI passes
-    // a same origin check with the target URI, we can preserve the users
-    // decision of disabling MCB on a page for it's child tabs.
-    let persistAllowMixedContentInChildTab = false;
-
-    if (this.contentData.parentAllowsMixedContent) {
-      const sm = Services.scriptSecurityManager;
-      try {
-        let targetURI = this.linkURI;
-        let isPrivateWin =
-          this.browser.contentPrincipal.originAttributes.privateBrowsingId > 0;
-        sm.checkSameOriginURI(referrerURI, targetURI, false, isPrivateWin);
-        persistAllowMixedContentInChildTab = true;
-      } catch (e) {}
-    }
-
     let params = {
-      allowMixedContent: persistAllowMixedContentInChildTab,
       userContextId: parseInt(event.target.getAttribute("data-usercontextid")),
     };
 
@@ -1349,6 +1342,16 @@ class nsContextMenu {
       this.contentData.docLocation,
       null,
       null,
+      null,
+      this.browser
+    );
+  }
+
+  viewImageInfo() {
+    BrowserPageInfo(
+      this.contentData.docLocation,
+      "mediaTab",
+      this.imageInfo,
       null,
       this.browser
     );
@@ -1831,7 +1834,7 @@ class nsContextMenu {
         referrerInfo,
         cookieJarSettings,
         this.frameOuterWindowID,
-        "",
+        this.mediaURL.startsWith("data") ? "index" : "", // use default file name "index" for data URIs
         isContentWindowPrivate
       );
     }
@@ -1849,11 +1852,11 @@ class nsContextMenu {
   }
 
   playPlugin() {
-    this.actor.pluginCommand("play", this.targetIdentifier);
+    /* no-op.  TODO: Remove me. */
   }
 
   hidePlugin() {
-    this.actor.pluginCommand("hide", this.targetIdentifier);
+    /* no-op.  TODO: Remove me. */
   }
 
   // Generate email address and put it on clipboard.

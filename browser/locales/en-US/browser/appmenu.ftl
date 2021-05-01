@@ -4,11 +4,11 @@
 
 ## App Menu
 
-appmenuitem-update-banner2 =
+appmenuitem-update-banner3 =
     .label-update-downloading = Downloading { -brand-shorter-name } update
     .label-update-available = Update available — download now
     .label-update-manual = Update available — download now
-    .label-update-unsupported = Unable to update
+    .label-update-unsupported = Unable to update — system incompatible
     .label-update-restart = Update available — restart now
 
 appmenuitem-protection-dashboard-title = Protections Dashboard
@@ -60,15 +60,13 @@ appmenu-remote-tabs-turn-on-sync =
 
 appmenuitem-fxa-toolbar-sync-now2 = Sync Now
 appmenuitem-fxa-manage-account = Manage Account
-appmenu-fxa-header =
-    .title = { -fxaccount-brand-name }
+appmenu-fxa-header2 = { -fxaccount-brand-name }
 # Variables
 # $time (string) - Localized relative time since last sync (e.g. 1 second ago,
 # 3 hours ago, etc.)
 appmenu-fxa-last-sync = Last synced { $time }
     .label = Last synced { $time }
-appmenu-fxa-sync-and-save-data =
-    .value = Sync and save data
+appmenu-fxa-sync-and-save-data2 = Sync and save data
 appmenu-fxa-signed-in-label = Sign In
 appmenu-fxa-setup-sync =
     .label = Turn On Syncing…

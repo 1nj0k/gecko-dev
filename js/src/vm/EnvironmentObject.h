@@ -441,14 +441,13 @@ class ModuleEnvironmentObject : public EnvironmentObject {
   bool hasImportBinding(HandlePropertyName name);
 
   bool lookupImport(jsid name, ModuleEnvironmentObject** envOut,
-                    Shape** shapeOut);
+                    mozilla::Maybe<ShapeProperty>* propOut);
 
   void fixEnclosingEnvironmentAfterRealmMerge(GlobalObject& global);
 
  private:
   static bool lookupProperty(JSContext* cx, HandleObject obj, HandleId id,
-                             MutableHandleObject objp,
-                             MutableHandle<PropertyResult> propp);
+                             MutableHandleObject objp, PropertyResult* propp);
   static bool hasProperty(JSContext* cx, HandleObject obj, HandleId id,
                           bool* foundp);
   static bool getProperty(JSContext* cx, HandleObject obj, HandleValue receiver,
@@ -456,9 +455,9 @@ class ModuleEnvironmentObject : public EnvironmentObject {
   static bool setProperty(JSContext* cx, HandleObject obj, HandleId id,
                           HandleValue v, HandleValue receiver,
                           JS::ObjectOpResult& result);
-  static bool getOwnPropertyDescriptor(JSContext* cx, HandleObject obj,
-                                       HandleId id,
-                                       MutableHandle<PropertyDescriptor> desc);
+  static bool getOwnPropertyDescriptor(
+      JSContext* cx, HandleObject obj, HandleId id,
+      MutableHandle<mozilla::Maybe<PropertyDescriptor>> desc);
   static bool deleteProperty(JSContext* cx, HandleObject obj, HandleId id,
                              ObjectOpResult& result);
   static bool newEnumerate(JSContext* cx, HandleObject obj,

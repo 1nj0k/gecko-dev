@@ -7,7 +7,7 @@
 
 %include ../../shared/findBar.inc.css
 
-@supports not -moz-bool-pref("browser.proton.enabled") {
+@media not (-moz-proton) {
 html|input.findbar-textbox {
   background-image: url("chrome://global/skin/icons/search-textbox.svg");
   padding-inline-start: 19px;
@@ -44,19 +44,4 @@ html|input.findbar-textbox {
 html|input.findbar-textbox:-moz-locale-dir(rtl) {
   background-position-x: right 5px;
 }
-}
-/*** END !proton ***/
-
-.findbar-container {
-  padding-inline-start: 2px;
-}
-
-label.findbar-find-fast {
-  color: #6d6d6d;
-  margin: 0;
-  margin-inline-start: 12px;
-}
-
-label.findbar-find-fast:-moz-lwtheme {
-  color: inherit;
-}
+} /*** END !proton ***/

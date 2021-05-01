@@ -173,6 +173,9 @@ class ContentParent final
 
   static void ReleaseCachedProcesses();
 
+  static void LogAndAssertFailedPrincipalValidationInfo(
+      nsIPrincipal* aPrincipal, const char* aMethod);
+
   /**
    * Picks a random content parent from |aContentParents| respecting the index
    * limit set by |aMaxContentParents|.
@@ -337,16 +340,6 @@ class ContentParent final
 
   mozilla::ipc::IPCResult RecvCreateGMPService();
 
-  mozilla::ipc::IPCResult RecvLoadPlugin(
-      const uint32_t& aPluginId, nsresult* aRv, uint32_t* aRunID,
-      Endpoint<PPluginModuleParent>* aEndpoint);
-
-  mozilla::ipc::IPCResult RecvMaybeReloadPlugins();
-
-  mozilla::ipc::IPCResult RecvConnectPluginBridge(
-      const uint32_t& aPluginId, nsresult* aRv,
-      Endpoint<PPluginModuleParent>* aEndpoint);
-
   mozilla::ipc::IPCResult RecvUngrabPointer(const uint32_t& aTime);
 
   mozilla::ipc::IPCResult RecvRemovePermission(const IPC::Principal& aPrincipal,
@@ -498,17 +491,6 @@ class ContentParent final
 
   mozilla::ipc::IPCResult RecvNotifyTabDestroying(const TabId& aTabId,
                                                   const ContentParentId& aCpId);
-
-  already_AddRefed<POfflineCacheUpdateParent> AllocPOfflineCacheUpdateParent(
-      nsIURI* aManifestURI, nsIURI* aDocumentURI,
-      const PrincipalInfo& aLoadingPrincipalInfo, const bool& aStickDocument,
-      const CookieJarSettingsArgs& aCookieJarSettingsArgs);
-
-  virtual mozilla::ipc::IPCResult RecvPOfflineCacheUpdateConstructor(
-      POfflineCacheUpdateParent* aActor, nsIURI* aManifestURI,
-      nsIURI* aDocumentURI, const PrincipalInfo& aLoadingPrincipal,
-      const bool& stickDocument,
-      const CookieJarSettingsArgs& aCookieJarSettingsArgs) override;
 
   mozilla::ipc::IPCResult RecvSetOfflinePermission(
       const IPC::Principal& principal);
@@ -690,7 +672,7 @@ class ContentParent final
   mozilla::ipc::IPCResult RecvClearFocus(
       const MaybeDiscarded<BrowsingContext>& aContext);
   mozilla::ipc::IPCResult RecvSetFocusedBrowsingContext(
-      const MaybeDiscarded<BrowsingContext>& aContext);
+      const MaybeDiscarded<BrowsingContext>& aContext, uint64_t aActionId);
   mozilla::ipc::IPCResult RecvSetActiveBrowsingContext(
       const MaybeDiscarded<BrowsingContext>& aContext, uint64_t aActionId);
   mozilla::ipc::IPCResult RecvUnsetActiveBrowsingContext(
@@ -1363,7 +1345,7 @@ class ContentParent final
   mozilla::ipc::IPCResult RecvHistoryGo(
       const MaybeDiscarded<BrowsingContext>& aContext, int32_t aOffset,
       uint64_t aHistoryEpoch, bool aRequireUserInteraction,
-      HistoryGoResolver&& aResolveRequestedIndex);
+      bool aUserActivation, HistoryGoResolver&& aResolveRequestedIndex);
 
   mozilla::ipc::IPCResult RecvSynchronizeLayoutHistoryState(
       const MaybeDiscarded<BrowsingContext>& aContext,

@@ -55,7 +55,7 @@ const ignorePatterns = [
 ];
 
 module.exports = {
-  parser: "babel-eslint",
+  parser: "@babel/eslint-parser",
   parserOptions: {
     sourceType: "script",
     babelOptions: {
@@ -239,12 +239,7 @@ module.exports = {
         "dom/quota/**",
         "dom/security/test/cors/**",
         "dom/security/test/csp/**",
-        "dom/security/test/general/**",
-        "dom/security/test/https-only/**",
         "dom/security/test/mixedcontentblocker/**",
-        "dom/security/test/sec-fetch/**",
-        "dom/security/test/sri/**",
-        "dom/security/test/referrer-policy/**",
         "dom/serviceworkers/**",
         "dom/smil/**",
         "dom/tests/mochitest/**",

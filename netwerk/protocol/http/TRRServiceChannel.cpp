@@ -669,10 +669,10 @@ nsresult TRRServiceChannel::SetupTransaction() {
   rv = mTransaction->Init(
       mCaps, mConnectionInfo, &mRequestHead, mUploadStream, mReqContentLength,
       LoadUploadStreamHasHeaders(), mCurrentEventTarget, callbacks, this,
-      mTopLevelOuterContentWindowId, HttpTrafficCategory::eInvalid,
-      mRequestContext, mClassOfService, mInitialRwin,
-      LoadResponseTimeoutEnabled(), mChannelId, nullptr,
-      std::move(pushCallback), mTransWithPushedStream, mPushedStreamId);
+      mTopBrowsingContextId, HttpTrafficCategory::eInvalid, mRequestContext,
+      mClassOfService, mInitialRwin, LoadResponseTimeoutEnabled(), mChannelId,
+      nullptr, std::move(pushCallback), mTransWithPushedStream,
+      mPushedStreamId);
 
   mTransWithPushedStream = nullptr;
 
@@ -1272,11 +1272,6 @@ TRRServiceChannel::LogMimeTypeMismatch(const nsACString& aMessageName,
 }
 
 NS_IMETHODIMP
-TRRServiceChannel::SetupFallbackChannel(const char* aFallbackKey) {
-  return NS_ERROR_NOT_IMPLEMENTED;
-}
-
-NS_IMETHODIMP
 TRRServiceChannel::GetIsAuthChannel(bool* aIsAuthChannel) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
@@ -1367,8 +1362,7 @@ TRRServiceChannel::GetLoadFlags(nsLoadFlags* aLoadFlags) {
 NS_IMETHODIMP
 TRRServiceChannel::SetLoadFlags(nsLoadFlags aLoadFlags) {
   if (aLoadFlags & (nsICachingChannel::LOAD_ONLY_FROM_CACHE | LOAD_FROM_CACHE |
-                    nsICachingChannel::LOAD_NO_NETWORK_IO |
-                    nsICachingChannel::LOAD_CHECK_OFFLINE_CACHE)) {
+                    nsICachingChannel::LOAD_NO_NETWORK_IO)) {
     MOZ_ASSERT(false, "Wrong load flags!");
     return NS_ERROR_FAILURE;
   }

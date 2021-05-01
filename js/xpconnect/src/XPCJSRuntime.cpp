@@ -15,7 +15,6 @@
 #include "xpcpublic.h"
 #include "XPCWrapper.h"
 #include "XPCJSMemoryReporter.h"
-#include "XPCJSThreadPool.h"
 #include "XrayWrapper.h"
 #include "WrapperFactory.h"
 #include "mozJSComponentLoader.h"
@@ -1088,15 +1087,6 @@ void XPCJSRuntime::SystemIsBeingShutDown() {
   }
 }
 
-StaticAutoPtr<HelperThreadPool> gHelperThreads;
-
-void InitializeHelperThreadPool() { gHelperThreads = new HelperThreadPool(); }
-
-bool DispatchOffThreadTask(js::UniquePtr<RunnableTask> task) {
-  return NS_SUCCEEDED(gHelperThreads->Dispatch(
-      MakeAndAddRef<HelperThreadTaskHandler>(std::move(task))));
-}
-
 void XPCJSRuntime::Shutdown(JSContext* cx) {
   // This destructor runs before ~CycleCollectedJSContext, which does the actual
   // JS_DestroyContext() call. But destroying the context triggers one final GC,
@@ -1416,6 +1406,10 @@ static void ReportZoneStats(const JS::ZoneStats& zStats,
 
   ZRREPORT_GC_BYTES(pathPrefix + "jit-codes-gc-heap"_ns, zStats.jitCodesGCHeap,
                     "References to executable code pools used by the JITs.");
+
+  ZRREPORT_GC_BYTES(pathPrefix + "getter-setters-gc-heap"_ns,
+                    zStats.getterSettersGCHeap,
+                    "Information for getter/setter properties.");
 
   ZRREPORT_GC_BYTES(pathPrefix + "scopes/gc-heap"_ns, zStats.scopesGCHeap,
                     "Scope information for scripts.");
@@ -2359,6 +2353,12 @@ void JSReporter::CollectReports(WindowPaths* windowPaths,
       KIND_OTHER, rtStats.zTotals.unusedGCThings.baseShape,
       "Unused base shape cells within non-empty arenas.");
 
+  REPORT_BYTES(
+      nsLiteralCString(
+          "js-main-runtime-gc-heap-committed/unused/gc-things/getter-setters"),
+      KIND_OTHER, rtStats.zTotals.unusedGCThings.getterSetter,
+      "Unused getter-setter cells within non-empty arenas.");
+
   REPORT_BYTES(nsLiteralCString(
                    "js-main-runtime-gc-heap-committed/unused/gc-things/scopes"),
                KIND_OTHER, rtStats.zTotals.unusedGCThings.scope,
@@ -2419,6 +2419,12 @@ void JSReporter::CollectReports(WindowPaths* windowPaths,
           "js-main-runtime-gc-heap-committed/used/gc-things/base-shapes"),
       KIND_OTHER, rtStats.zTotals.shapeInfo.shapesGCHeapBase,
       "Used base shape cells.");
+
+  MREPORT_BYTES(
+      nsLiteralCString(
+          "js-main-runtime-gc-heap-committed/used/gc-things/getter-setters"),
+      KIND_OTHER, rtStats.zTotals.getterSettersGCHeap,
+      "Used getter/setter cells.");
 
   MREPORT_BYTES(nsLiteralCString(
                     "js-main-runtime-gc-heap-committed/used/gc-things/scopes"),
@@ -2900,29 +2906,6 @@ void ConstructUbiNode(void* storage, JSObject* ptr) {
   JS::ubi::ReflectorNode::construct(storage, ptr);
 }
 
-class HelperThreadPoolShutdownObserver : public nsIObserver {
- public:
-  NS_DECL_ISUPPORTS
-  NS_DECL_NSIOBSERVER
- protected:
-  virtual ~HelperThreadPoolShutdownObserver() = default;
-};
-
-NS_IMPL_ISUPPORTS(HelperThreadPoolShutdownObserver, nsIObserver, nsISupports)
-
-NS_IMETHODIMP
-HelperThreadPoolShutdownObserver::Observe(nsISupports* aSubject,
-                                          const char* aTopic,
-                                          const char16_t* aData) {
-  MOZ_RELEASE_ASSERT(!strcmp(aTopic, "xpcom-shutdown-threads"));
-
-  // Shut down the helper threads
-  gHelperThreads->Shutdown();
-  gHelperThreads = nullptr;
-
-  return NS_OK;
-}
-
 void XPCJSRuntime::Initialize(JSContext* cx) {
   mLoaderGlobal.init(cx, nullptr);
 
@@ -2978,14 +2961,6 @@ void XPCJSRuntime::Initialize(JSContext* cx) {
   JS::SetProcessLargeAllocationFailureCallback(
       OnLargeAllocationFailureCallback);
   JS::SetProcessBuildIdOp(GetBuildId);
-
-  // Initialize a helper thread pool for JS offthread tasks. Set the
-  // task callback to divert tasks to the helperthreads.
-  nsCOMPtr<nsIObserverService> obsService = services::GetObserverService();
-  nsCOMPtr<nsIObserver> obs = new HelperThreadPoolShutdownObserver();
-  obsService->AddObserver(obs, "xpcom-shutdown-threads", false);
-  InitializeHelperThreadPool();
-  SetHelperThreadTaskCallback(&DispatchOffThreadTask);
 
   // The JS engine needs to keep the source code around in order to implement
   // Function.prototype.toSource(). It'd be nice to not have to do this for
@@ -3276,26 +3251,3 @@ uint32_t GetAndClampCPUCount() {
   }
   return std::min(proc, 8);
 }
-nsresult HelperThreadPool::Dispatch(
-    already_AddRefed<HelperThreadTaskHandler> aRunnable) {
-  return mPool->Dispatch(std::move(aRunnable), NS_DISPATCH_NORMAL);
-}
-
-HelperThreadPool::HelperThreadPool() {
-  mPool = new nsThreadPool();
-  mPool->SetName("JSHelperThreads"_ns);
-  mPool->SetThreadLimit(GetAndClampCPUCount());
-  // Helper threads need a larger stack size than the default nsThreadPool stack
-  // size. These values are described in detail in HelperThreads.cpp.
-  const uint32_t kDefaultHelperStackSize = 2048 * 1024 - 2 * 4096;
-
-#if defined(MOZ_TSAN)
-  const uint32_t HELPER_STACK_SIZE = 2 * kDefaultHelperStackSize;
-#else
-  const uint32_t HELPER_STACK_SIZE = kDefaultHelperStackSize;
-#endif
-
-  mPool->SetThreadStackSize(HELPER_STACK_SIZE);
-}
-
-void HelperThreadPool::Shutdown() { mPool->Shutdown(); }

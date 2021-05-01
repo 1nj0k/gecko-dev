@@ -10,7 +10,7 @@
 
 %include ../../shared/checkbox.inc.css
 
-@supports -moz-bool-pref("browser.proton.enabled") {
+@media (-moz-proton) {
 /* ::::: checkbox ::::: */
 
 checkbox[native] {
@@ -22,10 +22,6 @@ checkbox[native] {
   padding-bottom: 1px;
   padding-inline-start: 4px;
   padding-inline-end: 2px;
-}
-
-.checkbox-icon[native][src] {
-  margin-inline-end: 2px;
 }
 
 .checkbox-label[native] {
@@ -59,11 +55,11 @@ checkbox[native][disabled="true"] {
   -moz-box-align: center;
   min-width: 13px;
   min-height: 13px;
-  margin-inline-end: 3px;
+  margin-inline-end: 5px;
 }
 } /** END Proton **/
 
-@supports not -moz-bool-pref("browser.proton.enabled") {
+@media not (-moz-proton) {
 /* ::::: checkbox ::::: */
 
 checkbox {
@@ -75,10 +71,6 @@ checkbox {
   padding-bottom: 1px;
   padding-inline-start: 4px;
   padding-inline-end: 2px;
-}
-
-.checkbox-icon[src] {
-  margin-inline-end: 2px;
 }
 
 .checkbox-label {

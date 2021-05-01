@@ -73,8 +73,8 @@ Http3Session::Http3Session()
   MOZ_ASSERT(OnSocketThread(), "not on socket thread");
   LOG(("Http3Session::Http3Session [this=%p]", this));
 
-  mCurrentForegroundTabOuterContentWindowId =
-      gHttpHandler->ConnMgr()->CurrentTopLevelOuterContentWindowId();
+  mCurrentTopBrowsingContextId =
+      gHttpHandler->ConnMgr()->CurrentTopBrowsingContextId();
   mThroughCaptivePortal = gHttpHandler->GetThroughCaptivePortal();
 }
 
@@ -516,6 +516,15 @@ nsresult Http3Session::ProcessEvents() {
                           0);
 
         ReportHttp3Connection();
+        // Maybe call ResumeSend:
+        // In case ZeroRtt has been used and it has been rejected, 2 events will
+        // be received: ZeroRttRejected and ConnectionConnected. ZeroRttRejected
+        // that will put all transaction into mReadyForWrite queue and it will
+        // call MaybeResumeSend, but that will not have an effect because the
+        // connection is ont in CONNECTED state. When ConnectionConnected event
+        // is received call MaybeResumeSend to trigger reads for the
+        // zero-rtt-rejected transactions.
+        MaybeResumeSend();
       } break;
       case Http3Event::Tag::GoawayReceived:
         LOG(("Http3Session::ProcessEvents - GoawayReceived"));
@@ -1393,13 +1402,13 @@ void Http3Session::DontReuse() {
   }
 }
 
-void Http3Session::TopLevelOuterContentWindowIdChanged(uint64_t windowId) {
+void Http3Session::TopBrowsingContextIdChanged(uint64_t id) {
   MOZ_ASSERT(OnSocketThread(), "not on socket thread");
 
-  mCurrentForegroundTabOuterContentWindowId = windowId;
+  mCurrentTopBrowsingContextId = id;
 
   for (const auto& stream : mStreamTransactionHash.Values()) {
-    stream->TopLevelOuterContentWindowIdChanged(windowId);
+    stream->TopBrowsingContextIdChanged(id);
   }
 }
 
@@ -1625,6 +1634,7 @@ void Http3Session::SetSecInfo() {
   if (NS_SUCCEEDED(mHttp3Connection->GetSecInfo(&secInfo))) {
     mSocketControl->SetSSLVersionUsed(secInfo.version);
     mSocketControl->SetResumed(secInfo.resumed);
+    mSocketControl->SetNegotiatedNPN(secInfo.alpn);
 
     mSocketControl->SetInfo(secInfo.cipher, secInfo.version, secInfo.group,
                             secInfo.signature_scheme);

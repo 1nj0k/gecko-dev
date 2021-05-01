@@ -10,7 +10,6 @@
 
 #include "nsRect.h"
 #include "imgIContainer.h"
-#include "npapi.h"
 #include "nsTArray.h"
 #include "Units.h"
 
@@ -330,11 +329,6 @@ class nsCocoaUtils {
                                                     NSGraphicsContext* aContext);
 
   /**
-   * Initializes aNPCocoaEvent.
-   */
-  static void InitNPCocoaEvent(NPCocoaEvent* aNPCocoaEvent);
-
-  /**
    * Initializes WidgetInputEvent for aNativeEvent or aModifiers.
    */
   static void InitInputEvent(mozilla::WidgetInputEvent& aInputEvent, NSEvent* aNativeEvent);
@@ -383,6 +377,12 @@ class nsCocoaUtils {
    */
   static NSEventModifierFlags ConvertWidgetModifiersToMacModifierFlags(
       nsIWidget::Modifiers aNativeModifiers);
+
+  /**
+   * Get the mouse button, which depends on the event's type and buttonNumber.
+   * Returns MouseButton::ePrimary for non-mouse events.
+   */
+  static mozilla::MouseButton ButtonForEvent(NSEvent* aEvent);
 
   /**
    * Convert string with font attribute to NSMutableAttributedString

@@ -8,9 +8,14 @@ const KNOWN_NAMES = {
     "cc-num",
     "card-number",
     "card-num",
+    "number",
+    "cc",
     "cc-no",
     "card-no",
+    "credit-card",
     "numero-carte",
+    "carte",
+    "carte-credit",
     "num-carte",
     "cb-num",
   ],
@@ -124,7 +129,7 @@ const KNOWN_NAMES = {
 
 add_task(async function setup() {
   ({ FormAutofillHeuristics } = ChromeUtils.import(
-    "resource://formautofill/FormAutofillHeuristics.jsm"
+    "resource://autofill/FormAutofillHeuristics.jsm"
   ));
 });
 

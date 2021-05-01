@@ -2035,6 +2035,7 @@ class nsDisplayListBuilder {
   bool mContainsBackdropFilter;
   bool mIsRelativeToLayoutViewport;
   bool mUseOverlayScrollbars;
+  bool mAlwaysLayerizeScrollbars;
 
   mozilla::Maybe<float> mVisibleThreshold;
   mozilla::gfx::CompositorHitTestInfo mCompositorHitTestInfo;
@@ -5126,6 +5127,7 @@ class nsDisplayOutline final : public nsPaintedDisplayItem {
   void Paint(nsDisplayListBuilder* aBuilder, gfxContext* aCtx) override;
 
  private:
+  nsRect GetInnerRect() const;
   bool IsThemedOutline() const;
   bool HasRadius() const;
 };
@@ -7407,26 +7409,6 @@ namespace mozilla {
 
 class PaintTelemetry {
  public:
-  enum class Metric {
-    DisplayList,
-    Layerization,
-    FlushRasterization,
-    Rasterization,
-    COUNT,
-  };
-
-  class AutoRecord {
-   public:
-    explicit AutoRecord(Metric aMetric);
-    ~AutoRecord();
-
-    TimeStamp GetStart() const { return mStart; }
-
-   private:
-    Metric mMetric;
-    mozilla::TimeStamp mStart;
-  };
-
   class AutoRecordPaint {
    public:
     AutoRecordPaint();
@@ -7438,8 +7420,6 @@ class PaintTelemetry {
 
  private:
   static uint32_t sPaintLevel;
-  static uint32_t sMetricLevel;
-  static mozilla::EnumeratedArray<Metric, Metric::COUNT, double> sMetrics;
 };
 
 }  // namespace mozilla

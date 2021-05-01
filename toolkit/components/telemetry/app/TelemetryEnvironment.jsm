@@ -358,7 +358,11 @@ const SEARCH_SERVICE_TOPIC = "browser-search-service";
 const SESSIONSTORE_WINDOWS_RESTORED_TOPIC = "sessionstore-windows-restored";
 const PREF_CHANGED_TOPIC = "nsPref:changed";
 const BLOCKLIST_LOADED_TOPIC = "plugin-blocklist-loaded";
-const AUTO_UPDATE_PREF_CHANGE_TOPIC = "auto-update-config-change";
+const AUTO_UPDATE_PREF_CHANGE_TOPIC =
+  UpdateUtils.PER_INSTALLATION_PREFS["app.update.auto"].observerTopic;
+const BACKGROUND_UPDATE_PREF_CHANGE_TOPIC =
+  UpdateUtils.PER_INSTALLATION_PREFS["app.update.background.enabled"]
+    .observerTopic;
 const SERVICES_INFO_CHANGE_TOPIC = "sync-ui-state:update";
 
 /**
@@ -634,12 +638,10 @@ EnvironmentAddonBuilder.prototype = {
     if (aTopic == BLOCKLIST_LOADED_TOPIC) {
       Services.obs.removeObserver(this, BLOCKLIST_LOADED_TOPIC);
       this._blocklistObserverAdded = false;
-      let plugins = this._getActivePlugins();
       let gmpPluginsPromise = this._getActiveGMPlugins();
       gmpPluginsPromise.then(
         gmpPlugins => {
           let { addons } = this._environment._currentEnvironment;
-          addons.activePlugins = plugins;
           addons.activeGMPlugins = gmpPlugins;
         },
         err => {
@@ -720,7 +722,6 @@ EnvironmentAddonBuilder.prototype = {
     let addons = {
       activeAddons: await this._getActiveAddons(),
       theme: await this._getActiveTheme(),
-      activePlugins: this._getActivePlugins(atStartup),
       activeGMPlugins: await this._getActiveGMPlugins(atStartup),
     };
 
@@ -851,76 +852,6 @@ EnvironmentAddonBuilder.prototype = {
   },
 
   /**
-   * Get the plugins data in object form.
-   *
-   * @param {boolean} [atStartup]
-   *        True if this is the first check we're performing at startup. In that
-   *        situation, we defer some more expensive initialization.
-   *
-   * @return Object containing the plugins data.
-   */
-  _getActivePlugins(atStartup) {
-    // If we haven't yet loaded the blocklist, pass back dummy data for now,
-    // and add an observer to update this data as soon as we get it.
-    if (atStartup || !Services.blocklist.isLoaded) {
-      if (!this._blocklistObserverAdded) {
-        Services.obs.addObserver(this, BLOCKLIST_LOADED_TOPIC);
-        this._blocklistObserverAdded = true;
-      }
-      return [
-        {
-          name: "dummy",
-          version: "0.1",
-          description: "Blocklist unavailable",
-          blocklisted: false,
-          disabled: true,
-          clicktoplay: false,
-          mimeTypes: ["text/there.is.only.blocklist"],
-          updateDay: Utils.millisecondsToDays(Date.now()),
-        },
-      ];
-    }
-    let pluginTags = Cc["@mozilla.org/plugin/host;1"]
-      .getService(Ci.nsIPluginHost)
-      .getPluginTags();
-
-    let activePlugins = [];
-    for (let tag of pluginTags) {
-      // Skip plugins which are not active.
-      if (tag.disabled) {
-        continue;
-      }
-
-      try {
-        // Make sure to have a valid date.
-        let updateDate = new Date(Math.max(0, tag.lastModifiedTime));
-
-        activePlugins.push({
-          name: limitStringToLength(tag.name, MAX_ADDON_STRING_LENGTH),
-          version: limitStringToLength(tag.version, MAX_ADDON_STRING_LENGTH),
-          description: limitStringToLength(
-            tag.description,
-            MAX_ADDON_STRING_LENGTH
-          ),
-          blocklisted: tag.blocklisted,
-          disabled: tag.disabled,
-          clicktoplay: tag.clicktoplay,
-          mimeTypes: tag.getMimeTypes(),
-          updateDay: Utils.millisecondsToDays(updateDate.getTime()),
-        });
-      } catch (ex) {
-        this._environment._log.error(
-          "_getActivePlugins - A plugin was discarded due to an error",
-          ex
-        );
-        continue;
-      }
-    }
-
-    return activePlugins;
-  },
-
-  /**
    * Get the GMPlugins data in object form.
    *
    * @param {boolean} [atStartup]
@@ -1019,7 +950,7 @@ function EnvironmentCache() {
   if (AppConstants.MOZ_BUILD_APP == "browser") {
     p.push(this._loadAttributionAsync());
   }
-  p.push(this._loadAutoUpdateAsync());
+  p.push(this._loadAsyncUpdateSettings());
   p.push(this._loadIntlData());
 
   for (const [
@@ -1358,6 +1289,7 @@ EnvironmentCache.prototype = {
     Services.obs.addObserver(this, SEARCH_ENGINE_MODIFIED_TOPIC);
     Services.obs.addObserver(this, SEARCH_SERVICE_TOPIC);
     Services.obs.addObserver(this, AUTO_UPDATE_PREF_CHANGE_TOPIC);
+    Services.obs.addObserver(this, BACKGROUND_UPDATE_PREF_CHANGE_TOPIC);
     Services.obs.addObserver(this, SERVICES_INFO_CHANGE_TOPIC);
   },
 
@@ -1375,6 +1307,7 @@ EnvironmentCache.prototype = {
     Services.obs.removeObserver(this, SEARCH_ENGINE_MODIFIED_TOPIC);
     Services.obs.removeObserver(this, SEARCH_SERVICE_TOPIC);
     Services.obs.removeObserver(this, AUTO_UPDATE_PREF_CHANGE_TOPIC);
+    Services.obs.removeObserver(this, BACKGROUND_UPDATE_PREF_CHANGE_TOPIC);
     Services.obs.removeObserver(this, SERVICES_INFO_CHANGE_TOPIC);
   },
 
@@ -1442,6 +1375,9 @@ EnvironmentCache.prototype = {
         break;
       case AUTO_UPDATE_PREF_CHANGE_TOPIC:
         this._currentEnvironment.settings.update.autoDownload = aData == "true";
+        break;
+      case BACKGROUND_UPDATE_PREF_CHANGE_TOPIC:
+        this._currentEnvironment.settings.update.background = aData == "true";
         break;
       case SERVICES_INFO_CHANGE_TOPIC:
         this._updateServicesInfo();
@@ -1654,7 +1590,7 @@ EnvironmentCache.prototype = {
     this._updateAttribution();
     this._updateDefaultBrowser();
     await this._updateSearchEngine();
-    this._updateAutoDownload();
+    this._loadAsyncUpdateSettingsFromCache();
   },
 
   _getSandboxData() {
@@ -1739,26 +1675,33 @@ EnvironmentCache.prototype = {
   },
 
   /**
-   * Load the auto update pref and adds it to the environment
+   * Load the per-installation update settings, cache them, and add them to the
+   * environment.
    */
-  async _loadAutoUpdateAsync() {
+  async _loadAsyncUpdateSettings() {
     if (AppConstants.MOZ_UPDATER) {
       this._updateAutoDownloadCache = await UpdateUtils.getAppUpdateAutoEnabled();
+      this._updateBackgroundCache = await UpdateUtils.readUpdateConfigSetting(
+        "app.update.background.enabled"
+      );
     } else {
       this._updateAutoDownloadCache = false;
+      this._updateBackgroundCache = false;
     }
-    this._updateAutoDownload();
+    this._loadAsyncUpdateSettingsFromCache();
   },
 
   /**
-   * Update the environment with the cached value for whether updates can auto-
-   * download.
+   * Update the environment with the cached values for per-installation update
+   * settings.
    */
-  _updateAutoDownload() {
-    if (this._updateAutoDownloadCache === undefined) {
-      return;
+  _loadAsyncUpdateSettingsFromCache() {
+    if (this._updateAutoDownloadCache !== undefined) {
+      this._currentEnvironment.settings.update.autoDownload = this._updateAutoDownloadCache;
     }
-    this._currentEnvironment.settings.update.autoDownload = this._updateAutoDownloadCache;
+    if (this._updateBackgroundCache !== undefined) {
+      this._currentEnvironment.settings.update.background = this._updateBackgroundCache;
+    }
   },
 
   /**

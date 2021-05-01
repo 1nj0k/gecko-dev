@@ -174,6 +174,10 @@ PlacesViewBase.prototype = {
     return selectedNode ? [selectedNode] : [];
   },
 
+  get singleClickOpens() {
+    return true;
+  },
+
   get removableSelectionRanges() {
     // On static content the current selectedNode would be the selection's
     // parent node. We don't want to allow removing a node when the
@@ -800,10 +804,6 @@ PlacesViewBase.prototype = {
         "oncommand",
         "PlacesUIUtils.openMultipleLinksInTabs(this.parentNode._placesNode, event, " +
           "PlacesUIUtils.getViewForNode(this));"
-      );
-      aPopup._endOptOpenAllInTabs.setAttribute(
-        "onclick",
-        "checkForMiddleClick(this, event); event.stopPropagation();"
       );
       aPopup._endOptOpenAllInTabs.setAttribute(
         "label",

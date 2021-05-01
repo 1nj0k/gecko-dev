@@ -40,7 +40,7 @@ you can also schedule idle events in non-DOM contexts by using
 
 ## Hide your panels
 
-If you’re adding a new XUL **<xul:popup>** or **<xul:panel>** to a
+If you’re adding a new XUL *\<xul:popup\>* or *\<xul:panel\>* to a
 document, set the **hidden** attribute to **true** by default. By doing
 so, you cause the binding applied on demand rather than at load time,
 which makes initial construction of the XUL document faster.
@@ -114,7 +114,7 @@ frame tick. Depending on whether or not [the style information you’re
 asking for has something to do with size or position](https://gist.github.com/paulirish/5d52fb081b3570c81e3a)
 you may also cause a layout recalculation (also referred to as *layout
 flush* or *reflow*), which is also an expensive step see [Detecting
-and avoiding synchronous reflow)[#detecting-and-avoiding-synchronous-reflow] below.
+and avoiding synchronous reflow](#detecting-and-avoiding-synchronous-reflow) below.
 
 To avoid this: avoid reading style information if you can. If you *must*
 read style information, do so at the very beginning of the frame, before
@@ -474,8 +474,8 @@ in the [gfx room](https://chat.mozilla.org/#/room/%23gfx:mozilla.org)
 ## Adding nodes using DocumentFragments 
 
 Sometimes you need to add several DOM nodes as part of an existing DOM
-tree. For example, when using XUL *<xul:menupopup>* s, you often have
-script which dynamically inserts *<xul:menuitem>*s. Inserting items
+tree. For example, when using XUL *\<xul:menupopup\>s*, you often have
+script which dynamically inserts *\<xul:menuitem\>s*. Inserting items
 into the DOM has a cost. If you're adding a number of children to a DOM
 node in a loop, it's often more efficient to batch them into a single
 insertion by creating a *DocumentFragment*, adding the new nodes to
@@ -524,7 +524,7 @@ The Gecko profiler is your best friend when diagnosing performance
 problems and looking for bottlenecks. There’s plenty of excellent
 documentation on MDN about the Gecko profiler:
 
--  [Basic instructions for gathering and sharing a performance profile](https://developer.mozilla.org/en-US/docs/Mozilla/Performance/Reporting_a_Performance_Problem)
+-  [Basic instructions for gathering and sharing a performance profile](reporting_a_performance_problem.md)
 
 -  [Advanced profile analysis](https://developer.mozilla.org/en-US/docs/Mozilla/Performance/Profiling_with_the_Built-in_Profiler)
 

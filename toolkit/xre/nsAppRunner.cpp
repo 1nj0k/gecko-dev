@@ -92,6 +92,9 @@
 #include "mozilla/dom/quota/QuotaManager.h"
 #include "mozilla/scache/StartupCache.h"
 #include "gfxPlatform.h"
+#ifdef XP_MACOSX
+#  include "gfxPlatformMac.h"
+#endif
 
 #include "mozilla/Unused.h"
 
@@ -285,6 +288,9 @@ static const char gToolkitVersion[] = MOZ_STRINGIFY(GRE_MILESTONE);
 extern const char gToolkitBuildID[];
 
 static nsIProfileLock* gProfileLock;
+#if defined(MOZ_HAS_REMOTE)
+static nsRemoteService* gRemoteService;
+#endif
 
 int gRestartArgc;
 char** gRestartArgv;
@@ -967,7 +973,6 @@ nsXULAppInfo::GetWidgetToolkit(nsACString& aResult) {
                 "nsIXULRuntime.idl");
 
 SYNC_ENUMS(DEFAULT, Default)
-SYNC_ENUMS(PLUGIN, Plugin)
 SYNC_ENUMS(CONTENT, Content)
 SYNC_ENUMS(IPDLUNITTEST, IPDLUnitTest)
 SYNC_ENUMS(GMPLUGIN, GMPlugin)
@@ -2452,6 +2457,12 @@ static ReturnAbortOnError ProfileLockedDialog(nsIFile* aProfileDir,
         SaveFileToEnv("XRE_PROFILE_PATH", aProfileDir);
         SaveFileToEnv("XRE_PROFILE_LOCAL_PATH", aProfileLocalDir);
 
+#if defined(MOZ_HAS_REMOTE)
+        if (gRemoteService) {
+          gRemoteService->UnlockStartup();
+          gRemoteService = nullptr;
+        }
+#endif
         return LaunchChild(false, true);
       }
     } else {
@@ -2554,7 +2565,12 @@ static ReturnAbortOnError ShowProfileManager(
     gRestartArgv[gRestartArgc++] = const_cast<char*>("-os-restarted");
     gRestartArgv[gRestartArgc] = nullptr;
   }
-
+#if defined(MOZ_HAS_REMOTE)
+  if (gRemoteService) {
+    gRemoteService->UnlockStartup();
+    gRemoteService = nullptr;
+  }
+#endif
   return LaunchChild(false, true);
 }
 
@@ -4481,6 +4497,7 @@ int XREMain::XRE_mainStartup(bool* aExitFlag) {
   mRemoteService = new nsRemoteService(gAppData->remotingName);
   if (mRemoteService && !mDisableRemoteServer) {
     mRemoteService->LockStartup();
+    gRemoteService = mRemoteService;
   }
 #endif
 #if defined(MOZ_WIDGET_GTK)
@@ -4524,6 +4541,25 @@ int XREMain::XRE_mainStartup(bool* aExitFlag) {
     return 0;
   }
 
+#ifdef MOZ_BACKGROUNDTASKS
+  if (BackgroundTasks::IsBackgroundTaskMode()) {
+    // Allow tests to specify profile path via the environment.
+    if (!EnvHasValue("XRE_PROFILE_PATH")) {
+      nsString installHash;
+      mDirProvider.GetInstallHash(installHash);
+
+      nsCOMPtr<nsIFile> file;
+      nsresult rv = BackgroundTasks::CreateTemporaryProfileDirectory(
+          NS_LossyConvertUTF16toASCII(installHash), getter_AddRefs(file));
+      if (NS_WARN_IF(NS_FAILED(rv))) {
+        return 1;
+      }
+
+      SaveFileToEnv("XRE_PROFILE_PATH", file);
+    }
+  }
+#endif
+
   rv = NS_NewToolkitProfileService(getter_AddRefs(mProfileSvc));
   if (rv == NS_ERROR_FILE_ACCESS_DENIED) {
     PR_fprintf(PR_STDERR,
@@ -4535,22 +4571,6 @@ int XREMain::XRE_mainStartup(bool* aExitFlag) {
     ProfileMissingDialog(mNativeApp);
     return 1;
   }
-
-#ifdef MOZ_BACKGROUNDTASKS
-  if (BackgroundTasks::IsBackgroundTaskMode()) {
-    if (!EnvHasValue("XRE_PROFILE_PATH")) {
-      // Allow tests to specify profile path via the environment.
-      nsCOMPtr<nsIFile> file;
-      nsresult rv = BackgroundTasks::GetOrCreateTemporaryProfileDirectory(
-          getter_AddRefs(file));
-      if (NS_WARN_IF(NS_FAILED(rv))) {
-        return 1;
-      }
-
-      SaveFileToEnv("XRE_PROFILE_PATH", file);
-    }
-  }
-#endif
 
   bool wasDefaultSelection;
   nsCOMPtr<nsIToolkitProfile> profile;
@@ -5259,6 +5279,7 @@ nsresult XREMain::XRE_mainRun() {
       if (mRemoteService && !mDisableRemoteServer) {
         mRemoteService->StartupServer();
         mRemoteService->UnlockStartup();
+        gRemoteService = nullptr;
       }
 #endif /* MOZ_WIDGET_GTK */
 
@@ -5398,6 +5419,13 @@ int XREMain::XRE_main(int argc, char* argv[], const BootstrapConfig& aConfig) {
   AUTO_BASE_PROFILER_LABEL("XREMain::XRE_main (around Gecko Profiler)", OTHER);
   AUTO_PROFILER_INIT;
   AUTO_PROFILER_LABEL("XREMain::XRE_main", OTHER);
+
+#ifdef XP_MACOSX
+  // We call this early because it will kick off a background-thread task
+  // to register the fonts, and we'd like it to have a chance to complete
+  // before gfxPlatform initialization actually requires it.
+  gfxPlatformMac::RegisterSupplementalFonts();
+#endif
 
 #ifdef MOZ_CODE_COVERAGE
   CodeCoverageHandler::Init();
@@ -5562,10 +5590,6 @@ int XREMain::XRE_main(int argc, char* argv[], const BootstrapConfig& aConfig) {
   mProfileLock->Unlock();
   gProfileLock = nullptr;
 
-#ifdef MOZ_BACKGROUNDTASKS
-  BackgroundTasks::Shutdown();
-#endif
-
   gLastAppVersion.Truncate();
   gLastAppBuildID.Truncate();
 
@@ -5599,6 +5623,11 @@ int XRE_main(int argc, char* argv[], const BootstrapConfig& aConfig) {
 
   int result = main.XRE_main(argc, argv, aConfig);
   mozilla::RecordShutdownEndTimeStamp();
+#ifdef MOZ_BACKGROUNDTASKS
+  // This is well after the profile has been unlocked, so it's okay if this does
+  // delete this background task's temporary profile.
+  mozilla::BackgroundTasks::Shutdown();
+#endif
   return result;
 }
 
@@ -5672,9 +5701,10 @@ bool XRE_IsE10sParentProcess() {
 #endif
 }
 
-#define GECKO_PROCESS_TYPE(enum_name, string_name, xre_name, bin_type) \
-  bool XRE_Is##xre_name##Process() {                                   \
-    return XRE_GetProcessType() == GeckoProcessType_##enum_name;       \
+#define GECKO_PROCESS_TYPE(enum_value, enum_name, string_name, xre_name, \
+                           bin_type)                                     \
+  bool XRE_Is##xre_name##Process() {                                     \
+    return XRE_GetProcessType() == GeckoProcessType_##enum_name;         \
   }
 #include "mozilla/GeckoProcessTypes.h"
 #undef GECKO_PROCESS_TYPE
@@ -5779,8 +5809,9 @@ mozilla::BinPathType XRE_GetChildProcBinPathType(
   }
 
   switch (aProcessType) {
-#define GECKO_PROCESS_TYPE(enum_name, string_name, xre_name, bin_type) \
-  case GeckoProcessType_##enum_name:                                   \
+#define GECKO_PROCESS_TYPE(enum_value, enum_name, string_name, xre_name, \
+                           bin_type)                                     \
+  case GeckoProcessType_##enum_name:                                     \
     return BinPathType::bin_type;
 #include "mozilla/GeckoProcessTypes.h"
 #undef GECKO_PROCESS_TYPE

@@ -743,7 +743,7 @@ MDefinition* MDefinition::maybeMostRecentlyAddedDefUse() const {
 
 void MDefinition::replaceAllUsesWith(MDefinition* dom) {
   for (size_t i = 0, e = numOperands(); i < e; ++i) {
-    getOperand(i)->setUseRemovedUnchecked();
+    getOperand(i)->setImplicitlyUsedUnchecked();
   }
 
   justReplaceAllUsesWith(dom);
@@ -755,9 +755,6 @@ void MDefinition::justReplaceAllUsesWith(MDefinition* dom) {
 
   // Carry over the fact the value has uses which are no longer inspectable
   // with the graph.
-  if (isUseRemoved()) {
-    dom->setUseRemovedUnchecked();
-  }
   if (isImplicitlyUsed()) {
     dom->setImplicitlyUsedUnchecked();
   }
@@ -837,6 +834,10 @@ MConstant* MConstant::NewObject(TempAllocator& alloc, JSObject* v) {
   return new (alloc) MConstant(v);
 }
 
+MConstant* MConstant::NewShape(TempAllocator& alloc, Shape* s) {
+  return new (alloc) MConstant(s);
+}
+
 MConstant::MConstant(TempAllocator& alloc, const js::Value& vp)
     : MNullaryInstruction(classOpcode) {
   setResultType(MIRTypeFromValue(vp));
@@ -891,6 +892,12 @@ MConstant::MConstant(JSObject* obj) : MNullaryInstruction(classOpcode) {
   setMovable();
 }
 
+MConstant::MConstant(Shape* shape) : MNullaryInstruction(classOpcode) {
+  setResultType(MIRType::Shape);
+  payload_.shape = shape;
+  setMovable();
+}
+
 MConstant::MConstant(float f) : MNullaryInstruction(classOpcode) {
   setResultType(MIRType::Float32);
   payload_.f = f;
@@ -938,6 +945,7 @@ void MConstant::assertInitializedPayload() const {
     case MIRType::Symbol:
     case MIRType::BigInt:
     case MIRType::IntPtr:
+    case MIRType::Shape:
 #  if MOZ_LITTLE_ENDIAN()
       MOZ_ASSERT_IF(JS_BITS_PER_WORD == 32, (payload_.asBits >> 32) == 0);
 #  else
@@ -1038,6 +1046,9 @@ void MConstant::printOpcode(GenericPrinter& out) const {
     case MIRType::String:
       out.printf("string %p", (void*)toString());
       break;
+    case MIRType::Shape:
+      out.printf("shape at %p", (void*)toShape());
+      break;
     case MIRType::MagicOptimizedArguments:
       out.printf("magic lazyargs");
       break;
@@ -1100,6 +1111,8 @@ Value MConstant::toJSValue() const {
       return BigIntValue(toBigInt());
     case MIRType::Object:
       return ObjectValue(toObject());
+    case MIRType::Shape:
+      return PrivateGCThingValue(toShape());
     case MIRType::MagicOptimizedArguments:
       return MagicValue(JS_OPTIMIZED_ARGUMENTS);
     case MIRType::MagicOptimizedOut:
@@ -3979,19 +3992,23 @@ MObjectState::MObjectState(MObjectState* state)
 }
 
 MObjectState::MObjectState(JSObject* templateObject)
+    : MObjectState(templateObject->as<NativeObject>().shape()) {}
+
+MObjectState::MObjectState(const Shape* shape)
     : MVariadicInstruction(classOpcode) {
   // This instruction is only used as a summary for bailout paths.
   setResultType(MIRType::Object);
   setRecoveredOnBailout();
 
-  MOZ_ASSERT(templateObject->is<NativeObject>());
-
-  NativeObject* nativeObject = &templateObject->as<NativeObject>();
-  numSlots_ = nativeObject->slotSpan();
-  numFixedSlots_ = nativeObject->numFixedSlots();
+  numSlots_ = shape->slotSpan();
+  numFixedSlots_ = shape->numFixedSlots();
 }
 
+/* static */
 JSObject* MObjectState::templateObjectOf(MDefinition* obj) {
+  // MNewPlainObject uses a shape constant, not an object.
+  MOZ_ASSERT(!obj->isNewPlainObject());
+
   if (obj->isNewObject()) {
     return obj->toNewObject()->templateObject();
   } else if (obj->isCreateThisWithTemplate()) {
@@ -4016,6 +4033,15 @@ bool MObjectState::init(TempAllocator& alloc, MDefinition* obj) {
 
 bool MObjectState::initFromTemplateObject(TempAllocator& alloc,
                                           MDefinition* undefinedVal) {
+  if (object()->isNewPlainObject()) {
+    MOZ_ASSERT(object()->toNewPlainObject()->shape()->slotSpan() == numSlots());
+    for (size_t i = 0; i < numSlots(); i++) {
+      initSlot(i, undefinedVal);
+    }
+
+    return true;
+  }
+
   JSObject* templateObject = templateObjectOf(object());
 
   // Initialize all the slots of the object state with the value contained in
@@ -4042,10 +4068,16 @@ bool MObjectState::initFromTemplateObject(TempAllocator& alloc,
 }
 
 MObjectState* MObjectState::New(TempAllocator& alloc, MDefinition* obj) {
-  JSObject* templateObject = templateObjectOf(obj);
-  MOZ_ASSERT(templateObject, "Unexpected object creation.");
+  MObjectState* res;
+  if (obj->isNewPlainObject()) {
+    const Shape* shape = obj->toNewPlainObject()->shape();
+    res = new (alloc) MObjectState(shape);
+  } else {
+    JSObject* templateObject = templateObjectOf(obj);
+    MOZ_ASSERT(templateObject, "Unexpected object creation.");
+    res = new (alloc) MObjectState(templateObject);
+  }
 
-  MObjectState* res = new (alloc) MObjectState(templateObject);
   if (!res || !res->init(alloc, obj)) {
     return nullptr;
   }

@@ -3260,7 +3260,9 @@ class _DiscoveryStreamBase extends react__WEBPACK_IMPORTED_MODULE_13___default.a
           alignment: component.properties.alignment,
           display_variant: component.properties.display_variant,
           explore_topics: component.properties.explore_topics,
-          header: component.header
+          header: component.header,
+          locale: this.props.App.locale,
+          privacyNoticeURL: component.properties.privacyNoticeURL
         });
 
       case "CollectionCardGrid":
@@ -3454,7 +3456,8 @@ const DiscoveryStreamBase = Object(react_redux__WEBPACK_IMPORTED_MODULE_3__["con
   DiscoveryStream: state.DiscoveryStream,
   Prefs: state.Prefs,
   Sections: state.Sections,
-  document: global.document
+  document: global.document,
+  App: state.App
 }))(_DiscoveryStreamBase);
 /* WEBPACK VAR INJECTION */}.call(this, __webpack_require__(3)))
 
@@ -5893,61 +5896,66 @@ class _CollapsibleSection extends react__WEBPACK_IMPORTED_MODULE_3___default.a.P
       };
     }
 
-    return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_3___default.a.createElement("section", {
-      className: `collapsible-section ${this.props.className}${enableAnimation ? " animation-enabled" : ""}${collapsed ? " collapsed" : ""}${active ? " active" : ""}`,
-      "aria-expanded": !collapsed // Note: data-section-id is used for web extension api tests in mozilla central
-      ,
-      "data-section-id": id
-    }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_3___default.a.createElement("div", {
-      className: "section-top-bar"
-    }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_3___default.a.createElement("h3", {
-      className: "section-title",
-      style: titleStyle
-    }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_3___default.a.createElement("span", {
-      className: "click-target-container"
-    }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_3___default.a.createElement("span", {
-      className: "click-target",
-      role: "button",
-      tabIndex: "0",
-      onKeyPress: this.onKeyPress,
-      onClick: this.onHeaderClick
-    }, !isNewNewtabExperienceEnabled && this.renderIcon(), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_3___default.a.createElement(content_src_components_FluentOrText_FluentOrText__WEBPACK_IMPORTED_MODULE_2__["FluentOrText"], {
-      message: title
-    }), !isNewNewtabExperienceEnabled && isCollapsible && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_3___default.a.createElement("span", {
-      "data-l10n-id": collapsed ? "newtab-section-expand-section-label" : "newtab-section-collapse-section-label",
-      className: `collapsible-arrow icon ${collapsed ? "icon-arrowhead-forward-small" : "icon-arrowhead-down-small"}`
-    })), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_3___default.a.createElement("span", {
-      className: "learn-more-link-wrapper"
-    }, learnMore && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_3___default.a.createElement("span", {
-      className: "learn-more-link"
-    }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_3___default.a.createElement(content_src_components_FluentOrText_FluentOrText__WEBPACK_IMPORTED_MODULE_2__["FluentOrText"], {
-      message: learnMore.link.message
-    }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_3___default.a.createElement("a", {
-      href: learnMore.link.href
-    })))))), !isNewNewtabExperienceEnabled && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_3___default.a.createElement("div", null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_3___default.a.createElement(content_src_components_ContextMenu_ContextMenuButton__WEBPACK_IMPORTED_MODULE_7__["ContextMenuButton"], {
-      tooltip: "newtab-menu-section-tooltip",
-      onUpdate: this.onMenuUpdate,
-      refFunction: this.setContextMenuButtonRef
-    }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_3___default.a.createElement(content_src_components_SectionMenu_SectionMenu__WEBPACK_IMPORTED_MODULE_5__["SectionMenu"], {
-      id: id,
-      extraOptions: extraMenuOptions,
-      source: eventSource,
-      showPrefName: showPrefName,
-      privacyNoticeURL: privacyNoticeURL,
-      collapsed: collapsed,
-      isFixed: isFixed,
-      isFirst: isFirst,
-      isLast: isLast,
-      dispatch: dispatch,
-      isWebExtension: isWebExtension
-    })))), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_3___default.a.createElement(content_src_components_ErrorBoundary_ErrorBoundary__WEBPACK_IMPORTED_MODULE_1__["ErrorBoundary"], {
-      className: "section-body-fallback"
-    }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_3___default.a.createElement("div", {
-      className: `section-body${isAnimating ? " animating" : ""}`,
-      onTransitionEnd: this.onTransitionEnd,
-      ref: this.onBodyMount,
-      style: bodyStyle
-    }, this.props.children)));
+    return (
+      /*#__PURE__*/
+      // TODO: Bug 1702140: re-enable this rule.
+      // eslint-disable-next-line jsx-a11y/role-supports-aria-props
+      react__WEBPACK_IMPORTED_MODULE_3___default.a.createElement("section", {
+        className: `collapsible-section ${this.props.className}${enableAnimation ? " animation-enabled" : ""}${collapsed ? " collapsed" : ""}${active ? " active" : ""}`,
+        "aria-expanded": !collapsed // Note: data-section-id is used for web extension api tests in mozilla central
+        ,
+        "data-section-id": id
+      }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_3___default.a.createElement("div", {
+        className: "section-top-bar"
+      }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_3___default.a.createElement("h3", {
+        className: "section-title",
+        style: titleStyle
+      }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_3___default.a.createElement("span", {
+        className: "click-target-container"
+      }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_3___default.a.createElement("span", {
+        className: "click-target",
+        role: "button",
+        tabIndex: "0",
+        onKeyPress: this.onKeyPress,
+        onClick: this.onHeaderClick
+      }, !isNewNewtabExperienceEnabled && this.renderIcon(), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_3___default.a.createElement(content_src_components_FluentOrText_FluentOrText__WEBPACK_IMPORTED_MODULE_2__["FluentOrText"], {
+        message: title
+      }), !isNewNewtabExperienceEnabled && isCollapsible && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_3___default.a.createElement("span", {
+        "data-l10n-id": collapsed ? "newtab-section-expand-section-label" : "newtab-section-collapse-section-label",
+        className: `collapsible-arrow icon ${collapsed ? "icon-arrowhead-forward-small" : "icon-arrowhead-down-small"}`
+      })), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_3___default.a.createElement("span", {
+        className: "learn-more-link-wrapper"
+      }, learnMore && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_3___default.a.createElement("span", {
+        className: "learn-more-link"
+      }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_3___default.a.createElement(content_src_components_FluentOrText_FluentOrText__WEBPACK_IMPORTED_MODULE_2__["FluentOrText"], {
+        message: learnMore.link.message
+      }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_3___default.a.createElement("a", {
+        href: learnMore.link.href
+      })))))), !isNewNewtabExperienceEnabled && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_3___default.a.createElement("div", null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_3___default.a.createElement(content_src_components_ContextMenu_ContextMenuButton__WEBPACK_IMPORTED_MODULE_7__["ContextMenuButton"], {
+        tooltip: "newtab-menu-section-tooltip",
+        onUpdate: this.onMenuUpdate,
+        refFunction: this.setContextMenuButtonRef
+      }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_3___default.a.createElement(content_src_components_SectionMenu_SectionMenu__WEBPACK_IMPORTED_MODULE_5__["SectionMenu"], {
+        id: id,
+        extraOptions: extraMenuOptions,
+        source: eventSource,
+        showPrefName: showPrefName,
+        privacyNoticeURL: privacyNoticeURL,
+        collapsed: collapsed,
+        isFixed: isFixed,
+        isFirst: isFirst,
+        isLast: isLast,
+        dispatch: dispatch,
+        isWebExtension: isWebExtension
+      })))), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_3___default.a.createElement(content_src_components_ErrorBoundary_ErrorBoundary__WEBPACK_IMPORTED_MODULE_1__["ErrorBoundary"], {
+        className: "section-body-fallback"
+      }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_3___default.a.createElement("div", {
+        className: `section-body${isAnimating ? " animating" : ""}`,
+        onTransitionEnd: this.onTransitionEnd,
+        ref: this.onBodyMount,
+        style: bodyStyle
+      }, this.props.children)))
+    );
   }
 
 }
@@ -7722,7 +7730,13 @@ class _Card extends react__WEBPACK_IMPORTED_MODULE_5___default.a.PureComponent {
       } // Wait for the image whether just started loading or reused promise
 
 
-      await gImageLoading.get(imageUrl); // Only update state if we're still waiting to load the original image
+      try {
+        await gImageLoading.get(imageUrl);
+      } catch (ex) {
+        // Ignore the failed image without changing state
+        return;
+      } // Only update state if we're still waiting to load the original image
+
 
       if (content_src_lib_screenshot_utils__WEBPACK_IMPORTED_MODULE_6__["ScreenshotUtils"].isRemoteImageLocal(this.state.cardImage, this.props.link.image) && !this.state.imageLoaded) {
         this.setState({
@@ -9983,19 +9997,29 @@ class Navigation extends react__WEBPACK_IMPORTED_MODULE_1___default.a.PureCompon
     const links = this.props.links || [];
     const alignment = this.props.alignment || "centered";
     const header = this.props.header || {};
+    const english = this.props.locale.startsWith("en-");
+    const privacyNotice = this.props.privacyNoticeURL || {};
     return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_1___default.a.createElement("div", {
       className: `ds-navigation ds-navigation-${alignment}`
-    }, header.title ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_1___default.a.createElement(content_src_components_FluentOrText_FluentOrText__WEBPACK_IMPORTED_MODULE_3__["FluentOrText"], {
+    }, header.title && english ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_1___default.a.createElement(content_src_components_FluentOrText_FluentOrText__WEBPACK_IMPORTED_MODULE_3__["FluentOrText"], {
       message: header.title
     }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_1___default.a.createElement("span", {
       className: "ds-navigation-header"
-    })) : null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_1___default.a.createElement("ul", null, links && links.map(t => /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_1___default.a.createElement("li", {
+    })) : null, english ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_1___default.a.createElement("ul", null, links && links.map(t => /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_1___default.a.createElement("li", {
       key: t.name
     }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_1___default.a.createElement(Topic, {
       url: t.url,
       name: t.name,
       dispatch: this.props.dispatch
-    })))));
+    })))) : null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_1___default.a.createElement(_SafeAnchor_SafeAnchor__WEBPACK_IMPORTED_MODULE_2__["SafeAnchor"], {
+      onLinkClick: this.onLinkClick,
+      className: this.props.className,
+      url: privacyNotice.url
+    }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_1___default.a.createElement(content_src_components_FluentOrText_FluentOrText__WEBPACK_IMPORTED_MODULE_3__["FluentOrText"], {
+      message: privacyNotice.title
+    }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_1___default.a.createElement("span", {
+      className: "ds-navigation-privacy"
+    }))));
   }
 
 }
@@ -10095,10 +10119,6 @@ const selectLayoutRender = ({
 
   if (!prefs["feeds.topsites"]) {
     filterArray.push("TopSites");
-  }
-
-  if (!locale.startsWith("en-")) {
-    filterArray.push("Navigation");
   }
 
   const pocketEnabled = prefs["feeds.section.topstories"] && prefs["feeds.system.topstories"];
@@ -11816,6 +11836,7 @@ function convertLinks(links, sendClick, doNotAutoBlock, openNewWindow = false) {
         "data-do_not_autoblock": doNotAutoBlock,
         "data-entrypoint_name": links[linkTag].entrypoint_name,
         "data-entrypoint_value": links[linkTag].entrypoint_value,
+        rel: "noreferrer",
         onClick: sendClick
       });
       return acc;

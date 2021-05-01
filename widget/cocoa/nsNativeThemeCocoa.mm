@@ -40,6 +40,7 @@
 #include "mozilla/StaticPrefs_widget.h"
 #include "nsLookAndFeel.h"
 #include "MacThemeGeometryType.h"
+#include "SDKDeclarations.h"
 #include "VibrancyManager.h"
 
 #include "gfxContext.h"
@@ -73,12 +74,6 @@ void CUIDraw(CUIRendererRef r, CGRect rect, CGContextRef ctx, CFDictionaryRef op
   return [self controlTint];
 }
 @end
-
-#if !defined(MAC_OS_X_VERSION_10_14) || MAC_OS_X_VERSION_MAX_ALLOWED < MAC_OS_X_VERSION_10_14
-@interface NSApplication (NSApplicationAppearance)
-@property(readonly, strong) NSAppearance* effectiveAppearance NS_AVAILABLE_MAC(10_14);
-@end
-#endif
 
 // This is the window for our MOZCellDrawView. When an NSCell is drawn, some NSCell implementations
 // look at the draw view's window to determine whether the cell should draw with the active look.
@@ -252,13 +247,33 @@ static void DrawCellIncludingFocusRing(NSCell* aCell, NSRect aWithFrame, NSView*
 
 @end
 
-@interface MOZToolbarSearchFieldCell : NSSearchFieldCell
+@interface MOZSearchFieldCell : NSSearchFieldCell
+@property BOOL shouldUseToolbarStyle;
 @end
 
-@implementation MOZToolbarSearchFieldCell
+@implementation MOZSearchFieldCell
+
+- (instancetype)init {
+  // We would like to render a search field which has the magnifying glass icon at the start of the
+  // search field, and no cancel button.
+  // On 10.12 and 10.13, empty search fields render the magnifying glass icon in the middle of the
+  // field. So in order to get the icon to show at the start of the field, we need to give the field
+  // some content. We achieve this with a single space character.
+  self = [super initTextCell:@" "];
+
+  // However, because the field is now non-empty, by default it shows a cancel button. To hide the
+  // cancel button, override it with a custom NSButtonCell which renders nothing.
+  NSButtonCell* invisibleCell = [[NSButtonCell alloc] initImageCell:nil];
+  invisibleCell.bezeled = NO;
+  invisibleCell.bordered = NO;
+  self.cancelButtonCell = invisibleCell;
+  [invisibleCell release];
+
+  return self;
+}
 
 - (BOOL)_isToolbarMode {
-  return YES;
+  return self.shouldUseToolbarStyle;
 }
 
 @end
@@ -373,7 +388,7 @@ static BOOL IsActive(nsIFrame* aFrame, BOOL aIsToolbarControl) {
 
 static bool IsInSourceList(nsIFrame* aFrame) {
   for (nsIFrame* frame = aFrame->GetParent(); frame;
-       frame = nsLayoutUtils::GetCrossDocParentFrame(frame)) {
+       frame = nsLayoutUtils::GetCrossDocParentFrameInProcess(frame)) {
     if (frame->StyleDisplay()->EffectiveAppearance() == StyleAppearance::MozMacSourceList) {
       return true;
     }
@@ -418,17 +433,11 @@ nsNativeThemeCocoa::nsNativeThemeCocoa() {
   [mTextFieldCell setEditable:YES];
   [mTextFieldCell setFocusRingType:NSFocusRingTypeExterior];
 
-  mSearchFieldCell = [[NSSearchFieldCell alloc] initTextCell:@""];
+  mSearchFieldCell = [[MOZSearchFieldCell alloc] init];
   [mSearchFieldCell setBezelStyle:NSTextFieldRoundedBezel];
   [mSearchFieldCell setBezeled:YES];
   [mSearchFieldCell setEditable:YES];
   [mSearchFieldCell setFocusRingType:NSFocusRingTypeExterior];
-
-  mToolbarSearchFieldCell = [[MOZToolbarSearchFieldCell alloc] initTextCell:@""];
-  [mToolbarSearchFieldCell setBezelStyle:NSTextFieldRoundedBezel];
-  [mToolbarSearchFieldCell setBezeled:YES];
-  [mToolbarSearchFieldCell setEditable:YES];
-  [mToolbarSearchFieldCell setFocusRingType:NSFocusRingTypeExterior];
 
   mDropdownCell = [[NSPopUpButtonCell alloc] initTextCell:@"" pullsDown:NO];
 
@@ -476,7 +485,6 @@ nsNativeThemeCocoa::~nsNativeThemeCocoa() {
   [mCheckboxCell release];
   [mTextFieldCell release];
   [mSearchFieldCell release];
-  [mToolbarSearchFieldCell release];
   [mDropdownCell release];
   [mComboBoxCell release];
   [mCellDrawWindow release];
@@ -778,25 +786,17 @@ static void DrawCellWithSnapping(NSCell* cell, CGContextRef cgContext, const HIR
 + (CUIRendererRef)coreUIRenderer;
 @end
 
-static id GetAppAppearance() {
-  if (@available(macOS 10.14, *)) {
-    return NSApp.effectiveAppearance;
-  }
-  return [NSAppearance appearanceNamed:NSAppearanceNameAqua];
-}
-
 @interface NSObject (NSAppearanceCoreUIRendering)
 - (void)_drawInRect:(CGRect)rect context:(CGContextRef)cgContext options:(id)options;
 @end
 
 static void RenderWithCoreUI(CGRect aRect, CGContextRef cgContext, NSDictionary* aOptions,
                              bool aSkipAreaCheck = false) {
-  NSAppearance* appearance = GetAppAppearance();
-
   if (!aSkipAreaCheck && aRect.size.width * aRect.size.height > BITMAP_MAX_AREA) {
     return;
   }
 
+  NSAppearance* appearance = NSAppearance.currentAppearance;
   if (appearance && [appearance respondsToSelector:@selector(_drawInRect:context:options:)]) {
     // Render through NSAppearance on Mac OS 10.10 and up. This will call
     // CUIDraw with a CoreUI renderer that will give us the correct 10.10
@@ -1020,19 +1020,16 @@ void nsNativeThemeCocoa::DrawSearchField(CGContextRef cgContext, const HIRect& i
                                          const TextFieldParams& aParams) {
   NS_OBJC_BEGIN_TRY_IGNORE_BLOCK;
 
-  NSSearchFieldCell* cell = aParams.insideToolbar ? mToolbarSearchFieldCell : mSearchFieldCell;
-  [cell setEnabled:!aParams.disabled];
-  [cell setShowsFirstResponder:aParams.focused];
-
-  // When using the 10.11 SDK, the default string will be shown if we don't
-  // set the placeholder string.
-  [cell setPlaceholderString:@""];
+  mSearchFieldCell.enabled = !aParams.disabled;
+  mSearchFieldCell.showsFirstResponder = aParams.focused;
+  mSearchFieldCell.placeholderString = @"";
+  mSearchFieldCell.shouldUseToolbarStyle = aParams.insideToolbar;
 
   if (mCellDrawWindow) {
     mCellDrawWindow.cellsShouldLookActive = YES;  // TODO: propagate correct activeness state
   }
-  DrawCellWithSnapping(cell, cgContext, inBoxRect, searchFieldSettings, aParams.verticalAlignFactor,
-                       mCellDrawView, aParams.rtl);
+  DrawCellWithSnapping(mSearchFieldCell, cgContext, inBoxRect, searchFieldSettings,
+                       aParams.verticalAlignFactor, mCellDrawView, aParams.rtl);
 
   NS_OBJC_END_TRY_IGNORE_BLOCK;
 }
@@ -2662,7 +2659,9 @@ nsNativeThemeCocoa::DrawWidgetBackground(gfxContext* aContext, nsIFrame* aFrame,
 
   bool hidpi = IsHiDPIContext(aFrame->PresContext()->DeviceContext());
 
-  RenderWidget(*widgetInfo, *aContext->GetDrawTarget(), nativeWidgetRect,
+  auto colorScheme = LookAndFeel::ColorSchemeForDocument(*aFrame->PresContext()->Document());
+
+  RenderWidget(*widgetInfo, colorScheme, *aContext->GetDrawTarget(), nativeWidgetRect,
                NSRectToRect(aDirtyRect, p2a), hidpi ? 2.0f : 1.0f);
 
   return NS_OK;
@@ -2670,17 +2669,18 @@ nsNativeThemeCocoa::DrawWidgetBackground(gfxContext* aContext, nsIFrame* aFrame,
   NS_OBJC_END_TRY_BLOCK_RETURN(NS_ERROR_FAILURE);
 }
 
-void nsNativeThemeCocoa::RenderWidget(const WidgetInfo& aWidgetInfo, DrawTarget& aDrawTarget,
+void nsNativeThemeCocoa::RenderWidget(const WidgetInfo& aWidgetInfo,
+                                      LookAndFeel::ColorScheme aScheme, DrawTarget& aDrawTarget,
                                       const gfx::Rect& aWidgetRect, const gfx::Rect& aDirtyRect,
                                       float aScale) {
-  if (@available(macOS 10.14, *)) {
-    // Some of the drawing below uses NSAppearance.currentAppearance behind the scenes.
-    // Set it to the appearance we want, to overwrite any state that's still around from earlier
-    // paints. We set it to NSApp.effectiveAppearance, which is consistent with what nsLookAndFeel
-    // uses for CSS system colors; it's either the system appearance or our Aqua override.
-    // We could also make nsNativeThemeCocoa respect the per-window appearance, but only once CSS
-    // system colors also respect the window appearance.
-    NSAppearance.currentAppearance = NSApp.effectiveAppearance;
+  // Some of the drawing below uses NSAppearance.currentAppearance behind the scenes.
+  // Set it to the appearance we want, the same way as nsLookAndFeel::NativeGetColor.
+  NSAppearance.currentAppearance = NSAppearanceForColorScheme(aScheme);
+
+  // Also set the cell draw window's appearance; this is respected by NSTextFieldCell (and its
+  // subclass NSSearchFieldCell).
+  if (mCellDrawWindow) {
+    mCellDrawWindow.appearance = NSAppearance.currentAppearance;
   }
 
   const Widget widget = aWidgetInfo.Widget();
@@ -2880,7 +2880,6 @@ void nsNativeThemeCocoa::RenderWidget(const WidgetInfo& aWidgetInfo, DrawTarget&
         }
         case Widget::eListBox: {
           // Fill the content with the control color.
-          NSAppearance.currentAppearance = GetAppAppearance();
           CGContextSetFillColorWithColor(cgContext, [NSColor.controlColor CGColor]);
           CGContextFillRect(cgContext, macRect);
           // Draw the frame using kCUIWidgetScrollViewFrame. This is what NSScrollView uses in
@@ -3094,7 +3093,7 @@ LayoutDeviceIntMargin nsNativeThemeCocoa::GetWidgetBorder(nsDeviceContext* aCont
     case StyleAppearance::ScrollbartrackHorizontal:
     case StyleAppearance::ScrollbartrackVertical: {
       bool isHorizontal = (aAppearance == StyleAppearance::ScrollbartrackHorizontal);
-      if (nsLookAndFeel::UseOverlayScrollbars()) {
+      if (LookAndFeel::UseOverlayScrollbars()) {
         // Leave a bit of space at the start and the end on all OS X versions.
         if (isHorizontal) {
           result.left = 1;
@@ -3563,7 +3562,7 @@ bool nsNativeThemeCocoa::ThemeSupportsWidget(nsPresContext* aPresContext, nsIFra
       // overriden, and the custom transparent resizer looks better when
       // scrollbars are not present.
       nsIScrollableFrame* scrollFrame = do_QueryFrame(parentFrame);
-      return (!nsLookAndFeel::UseOverlayScrollbars() && scrollFrame &&
+      return (!LookAndFeel::UseOverlayScrollbars() && scrollFrame &&
               (!scrollFrame->GetScrollbarVisibility().isEmpty()));
     }
 
@@ -3705,7 +3704,7 @@ nsITheme::Transparency nsNativeThemeCocoa::GetWidgetTransparency(nsIFrame* aFram
     case StyleAppearance::ScrollbarVertical:
     case StyleAppearance::Scrollcorner: {
       // We don't use custom scrollbars when using overlay scrollbars.
-      if (nsLookAndFeel::UseOverlayScrollbars()) {
+      if (LookAndFeel::UseOverlayScrollbars()) {
         return eTransparent;
       }
       const nsStyleUI* ui = nsLayoutUtils::StyleForScrollbar(aFrame)->StyleUI();

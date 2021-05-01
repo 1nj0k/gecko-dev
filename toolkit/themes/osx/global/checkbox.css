@@ -6,7 +6,7 @@
 
 %include ../../shared/checkbox.inc.css
 
-@supports -moz-bool-pref("browser.proton.enabled") {
+@media (-moz-proton) {
 checkbox:not([native]):-moz-focusring > .checkbox-check {
   outline: 2px solid var(--focus-outline-color, -moz-mac-focusring);
 }
@@ -16,10 +16,6 @@ checkbox[native] {
   -moz-default-appearance: checkbox-container;
   -moz-box-align: center;
   margin: 4px 2px;
-}
-
-.checkbox-icon[native] {
-  margin-inline-end: 2px;
 }
 
 .checkbox-label[native] {
@@ -37,7 +33,8 @@ checkbox[native][disabled="true"] {
 .checkbox-check[native] {
   appearance: auto;
   -moz-default-appearance: checkbox;
-  margin: 1px 1px 0;
+  margin-block: 1px 0;
+  margin-inline: 1px 3px;
   /* vertical-align tells native theming where to snap to. However, this doesn't
    * always work reliably because of bug 503833. */
   vertical-align: top;
@@ -46,16 +43,12 @@ checkbox[native][disabled="true"] {
 }
 } /** END Proton **/
 
-@supports not -moz-bool-pref("browser.proton.enabled") {
+@media not (-moz-proton) {
 checkbox {
   appearance: auto;
   -moz-default-appearance: checkbox-container;
   -moz-box-align: center;
   margin: 4px 2px;
-}
-
-.checkbox-icon {
-  margin-inline-end: 2px;
 }
 
 .checkbox-label {

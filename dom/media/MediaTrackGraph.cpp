@@ -680,21 +680,11 @@ nsresult MediaTrackGraphImpl::OpenAudioInput(CubebUtils::AudioDeviceID aID,
   return NS_OK;
 }
 
-void MediaTrackGraphImpl::CloseAudioInputImpl(
-    Maybe<CubebUtils::AudioDeviceID>& aID, AudioDataListener* aListener) {
+void MediaTrackGraphImpl::CloseAudioInputImpl(CubebUtils::AudioDeviceID aID,
+                                              AudioDataListener* aListener) {
   MOZ_ASSERT(OnGraphThread());
-  // It is possible to not know the ID here, find it first.
-  if (aID.isNothing()) {
-    for (const auto& entry : mInputDeviceUsers) {
-      if (entry.GetData().Contains(aListener)) {
-        aID = Some(entry.GetKey());
-      }
-    }
-    MOZ_ASSERT(aID.isSome(), "Closing an audio input that was not opened.");
-  }
 
-  auto listeners = mInputDeviceUsers.Lookup(aID.value());
-
+  auto listeners = mInputDeviceUsers.Lookup(aID);
   MOZ_ASSERT(listeners);
   bool wasPresent = listeners->RemoveElement(aListener);
   MOZ_ASSERT(wasPresent);
@@ -712,7 +702,7 @@ void MediaTrackGraphImpl::CloseAudioInputImpl(
   }
 
   mInputDeviceID = nullptr;  // reset to default
-  mInputDeviceUsers.Remove(aID.value());
+  Unused << mInputDeviceUsers.Remove(aID);
 
   // Switch Drivers since we're adding or removing an input (to nothing/system
   // or output only)
@@ -773,12 +763,12 @@ void MediaTrackGraphImpl::UnregisterAudioOutput(MediaTrack* aTrack,
       });
 }
 
-void MediaTrackGraphImpl::CloseAudioInput(Maybe<CubebUtils::AudioDeviceID>& aID,
+void MediaTrackGraphImpl::CloseAudioInput(CubebUtils::AudioDeviceID aID,
                                           AudioDataListener* aListener) {
   MOZ_ASSERT(NS_IsMainThread());
   class Message : public ControlMessage {
    public:
-    Message(MediaTrackGraphImpl* aGraph, Maybe<CubebUtils::AudioDeviceID>& aID,
+    Message(MediaTrackGraphImpl* aGraph, CubebUtils::AudioDeviceID aID,
             AudioDataListener* aListener)
         : ControlMessage(nullptr),
           mGraph(aGraph),
@@ -786,7 +776,7 @@ void MediaTrackGraphImpl::CloseAudioInput(Maybe<CubebUtils::AudioDeviceID>& aID,
           mListener(aListener) {}
     void Run() override { mGraph->CloseAudioInputImpl(mID, mListener); }
     MediaTrackGraphImpl* mGraph;
-    Maybe<CubebUtils::AudioDeviceID> mID;
+    CubebUtils::AudioDeviceID mID;
     RefPtr<AudioDataListener> mListener;
   };
   this->AppendMessage(MakeUnique<Message>(this, aID, aListener));
@@ -886,7 +876,7 @@ void MediaTrackGraphImpl::DeviceChanged() {
   if (!NS_IsMainThread()) {
     RefPtr<nsIRunnable> runnable = WrapRunnable(
         RefPtr<MediaTrackGraphImpl>(this), &MediaTrackGraphImpl::DeviceChanged);
-    mAbstractMainThread->Dispatch(runnable.forget());
+    mMainThread->Dispatch(runnable.forget());
     return;
   }
 
@@ -1718,7 +1708,7 @@ void MediaTrackGraphImpl::RunInStableState(bool aSourceIsMTG) {
         LOG(LogLevel::Debug,
             ("%p: Sending MediaTrackGraphShutDownRunnable", this));
         nsCOMPtr<nsIRunnable> event = new MediaTrackGraphShutDownRunnable(this);
-        mAbstractMainThread->Dispatch(event.forget());
+        mMainThread->Dispatch(event.forget());
       }
     } else {
       if (LifecycleStateRef() <= LIFECYCLE_WAITING_FOR_MAIN_THREAD_CLEANUP) {
@@ -1772,7 +1762,7 @@ void MediaTrackGraphImpl::RunInStableState(bool aSourceIsMTG) {
       // Stop MediaTrackGraph threads.
       LifecycleStateRef() = LIFECYCLE_WAITING_FOR_THREAD_SHUTDOWN;
       nsCOMPtr<nsIRunnable> event = new MediaTrackGraphShutDownRunnable(this);
-      mAbstractMainThread->Dispatch(event.forget());
+      mMainThread->Dispatch(event.forget());
     }
 
     mGraphDriverRunning = LifecycleStateRef() == LIFECYCLE_RUNNING;
@@ -1817,7 +1807,7 @@ void MediaTrackGraphImpl::EnsureStableStateEventPosted() {
   mPostedRunInStableStateEvent = true;
   nsCOMPtr<nsIRunnable> event =
       new MediaTrackGraphStableStateRunnable(this, true);
-  mAbstractMainThread->Dispatch(event.forget());
+  mMainThread->Dispatch(event.forget());
 }
 
 void MediaTrackGraphImpl::SignalMainThreadCleanup() {
@@ -1867,7 +1857,7 @@ void MediaTrackGraphImpl::AppendMessage(UniquePtr<ControlMessage> aMessage) {
 }
 
 void MediaTrackGraphImpl::Dispatch(already_AddRefed<nsIRunnable>&& aRunnable) {
-  mAbstractMainThread->Dispatch(move(aRunnable));
+  mMainThread->Dispatch(move(aRunnable));
 }
 
 MediaTrack::MediaTrack(TrackRate aSampleRate, MediaSegment::Type aType,
@@ -3018,7 +3008,8 @@ void ProcessedMediaTrack::DestroyImpl() {
 MediaTrackGraphImpl::MediaTrackGraphImpl(
     GraphDriverType aDriverRequested, GraphRunType aRunTypeRequested,
     TrackRate aSampleRate, uint32_t aChannelCount,
-    CubebUtils::AudioDeviceID aOutputDeviceID, AbstractThread* aMainThread)
+    CubebUtils::AudioDeviceID aOutputDeviceID,
+    nsISerialEventTarget* aMainThread)
     : MediaTrackGraph(aSampleRate),
       mGraphRunner(aRunTypeRequested == SINGLE_THREAD
                        ? GraphRunner::Create(this)
@@ -3037,7 +3028,7 @@ MediaTrackGraphImpl::MediaTrackGraphImpl(
       mPostedRunInStableState(false),
       mRealtime(aDriverRequested != OFFLINE_THREAD_DRIVER),
       mTrackOrderDirty(false),
-      mAbstractMainThread(aMainThread),
+      mMainThread(aMainThread),
       mSelfRef(this),
       mGlobalVolume(CubebUtils::GetVolumeScale())
 #ifdef DEBUG
@@ -3078,11 +3069,6 @@ MediaTrackGraphImpl::MediaTrackGraphImpl(
   if (!IsNonRealtime()) {
     AddShutdownBlocker();
   }
-}
-
-AbstractThread* MediaTrackGraph::AbstractMainThread() {
-  MOZ_ASSERT(static_cast<MediaTrackGraphImpl*>(this)->mAbstractMainThread);
-  return static_cast<MediaTrackGraphImpl*>(this)->mAbstractMainThread;
 }
 
 #ifdef DEBUG
@@ -3136,13 +3122,13 @@ MediaTrackGraph* MediaTrackGraph::GetInstance(
       GetInstanceIfExists(aWindow, sampleRate, aOutputDeviceID));
 
   if (!graph) {
-    AbstractThread* mainThread;
+    nsISerialEventTarget* mainThread;
     if (aWindow) {
       mainThread =
           aWindow->AsGlobal()->AbstractMainThreadFor(TaskCategory::Other);
     } else {
       // Uncommon case, only for some old configuration of webspeech.
-      mainThread = AbstractThread::MainThread();
+      mainThread = GetMainThreadSerialEventTarget();
     }
 
     GraphRunType runType = DIRECT_DRIVER;
@@ -3175,7 +3161,7 @@ MediaTrackGraph* MediaTrackGraph::CreateNonRealtimeInstance(
     TrackRate aSampleRate, nsPIDOMWindowInner* aWindow) {
   MOZ_ASSERT(NS_IsMainThread(), "Main thread only");
 
-  AbstractThread* mainThread = AbstractThread::MainThread();
+  nsISerialEventTarget* mainThread = GetMainThreadSerialEventTarget();
   // aWindow can be null when the document is being unlinked, so this works when
   // with a generic main thread if that's the case.
   if (aWindow) {
@@ -3286,7 +3272,7 @@ void MediaTrackGraphImpl::CollectSizesForMemoryReport(
     }
   }
 
-  mAbstractMainThread->Dispatch(runnable.forget());
+  mMainThread->Dispatch(runnable.forget());
 }
 
 void MediaTrackGraphImpl::FinishCollectReports(

@@ -4,6 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #import <Cocoa/Cocoa.h>
+#include "mozilla/BasicEvents.h"
 #include "nsThreadUtils.h"
 #include "mozilla/dom/Document.h"
 
@@ -22,6 +23,22 @@
 #include "PresShell.h"
 #include "nsCocoaUtils.h"
 #include "nsIFrame.h"
+#include "nsCocoaFeatures.h"
+
+#if !defined(MAC_OS_X_VERSION_10_14) || MAC_OS_X_VERSION_MAX_ALLOWED < MAC_OS_X_VERSION_10_14
+@interface NSApplication (NSApplicationAppearance)
+@property(readonly, strong) NSAppearance* effectiveAppearance NS_AVAILABLE_MAC(10_14);
+@end
+#endif
+
+#if !defined(MAC_OS_VERSION_11_0) || MAC_OS_X_VERSION_MAX_ALLOWED < MAC_OS_VERSION_11_0
+@interface NSMenu (NSMenuAppearance)
+// In reality, NSMenu implements the NSAppearanceCustomization protocol, and picks up the appearance
+// property from that protocol. But we can't tack on protocol implementations, so we just declare
+// the property setter here.
+- (void)setAppearance:(NSAppearance*)appearance;
+@end
+#endif
 
 namespace mozilla {
 
@@ -29,7 +46,8 @@ using dom::Element;
 
 namespace widget {
 
-NativeMenuMac::NativeMenuMac(mozilla::dom::Element* aElement) : mContainerStatusBarItem(nil) {
+NativeMenuMac::NativeMenuMac(mozilla::dom::Element* aElement)
+    : mElement(aElement), mContainerStatusBarItem(nil) {
   MOZ_RELEASE_ASSERT(aElement->IsAnyOfXULElements(nsGkAtoms::menu, nsGkAtoms::menupopup));
   mMenuGroupOwner = new nsMenuGroupOwnerX(aElement, nullptr);
   mMenu = MakeRefPtr<nsMenuX>(nullptr, mMenuGroupOwner, aElement);
@@ -160,22 +178,45 @@ void NativeMenuMac::Dump() {
   NS_OBJC_END_TRY_ABORT_BLOCK;
 }
 
-void NativeMenuMac::OnMenuOpened() {
+void NativeMenuMac::OnMenuWillOpen(dom::Element* aPopupElement) {
+  if (aPopupElement == mElement) {
+    return;
+  }
+
   // Our caller isn't keeping us alive, so make sure we stay alive throughout this function in case
   // one of the observer notifications destroys us.
   RefPtr<NativeMenuMac> kungFuDeathGrip(this);
 
   for (NativeMenu::Observer* observer : mObservers.Clone()) {
-    observer->OnNativeMenuOpened();
+    observer->OnNativeSubMenuWillOpen(aPopupElement);
   }
 }
-void NativeMenuMac::OnMenuClosed() {
+
+void NativeMenuMac::OnMenuDidOpen(dom::Element* aPopupElement) {
   // Our caller isn't keeping us alive, so make sure we stay alive throughout this function in case
   // one of the observer notifications destroys us.
   RefPtr<NativeMenuMac> kungFuDeathGrip(this);
 
   for (NativeMenu::Observer* observer : mObservers.Clone()) {
-    observer->OnNativeMenuClosed();
+    if (aPopupElement == mElement) {
+      observer->OnNativeMenuOpened();
+    } else {
+      observer->OnNativeSubMenuDidOpen(aPopupElement);
+    }
+  }
+}
+
+void NativeMenuMac::OnMenuClosed(dom::Element* aPopupElement) {
+  // Our caller isn't keeping us alive, so make sure we stay alive throughout this function in case
+  // one of the observer notifications destroys us.
+  RefPtr<NativeMenuMac> kungFuDeathGrip(this);
+
+  for (NativeMenu::Observer* observer : mObservers.Clone()) {
+    if (aPopupElement == mElement) {
+      observer->OnNativeMenuClosed();
+    } else {
+      observer->OnNativeSubMenuClosed(aPopupElement);
+    }
   }
 }
 
@@ -199,24 +240,21 @@ static NSView* NativeViewForContent(nsIContent* aContent) {
   return (NSView*)widget->GetNativeData(NS_NATIVE_WIDGET);
 }
 
-bool NativeMenuMac::ShowAsContextMenu(const mozilla::DesktopPoint& aPosition) {
-  bool allowOpening = mMenu->OnOpen();
-  if (!allowOpening) {
-    // preventDefault() was called on the popupshowing event. Do not display the menu.
-    return false;
-  }
+void NativeMenuMac::ShowAsContextMenu(const mozilla::DesktopPoint& aPosition) {
+  mMenu->PopupShowingEventWasSentAndApprovedExternally();
 
   // Do the actual opening off of a runnable, so that this ShowAsContextMenu call does not spawn a
   // nested event loop, which would be surprising to our callers.
   mozilla::DesktopPoint position = aPosition;
   RefPtr<NativeMenuMac> self = this;
-  NS_DispatchToCurrentThread(NS_NewRunnableFunction("nsStandaloneNativeMenu::OpenMenu",
-                                                    [=]() { self->OpenMenu(position); }));
-
-  return true;
+  mOpenRunnable = NS_NewCancelableRunnableFunction("NativeMenuMac::ShowAsContextMenu",
+                                                   [=]() { self->OpenMenu(position); });
+  NS_DispatchToCurrentThread(mOpenRunnable);
 }
 
 void NativeMenuMac::OpenMenu(const mozilla::DesktopPoint& aPosition) {
+  mOpenRunnable = nullptr;
+
   // There are multiple ways to display an NSMenu as a context menu.
   //
   //  1. We can return the NSMenu from -[ChildView menuForEvent:] and the NSView will open it for
@@ -245,6 +283,17 @@ void NativeMenuMac::OpenMenu(const mozilla::DesktopPoint& aPosition) {
   NSView* view = NativeViewForContent(mMenu->Content());
   NSMenu* nativeMenu = mMenu->NativeNSMenu();
 
+  if (@available(macOS 10.14, *)) {
+#if !defined(MAC_OS_VERSION_11_0) || MAC_OS_X_VERSION_MAX_ALLOWED < MAC_OS_VERSION_11_0
+    if (nsCocoaFeatures::OnBigSurOrLater()) {
+#else
+    if (@available(macOS 11.0, *)) {
+#endif
+      // Make native context menus respect the NSApp appearance rather than the NSWindow appearance.
+      [nativeMenu setAppearance:NSApp.effectiveAppearance];
+    }
+  }
+
   NSPoint locationOnScreen = nsCocoaUtils::GeckoPointToCocoaPoint(aPosition);
   if (view) {
     // Create a synthetic event at the right location and open the menu [option 4].
@@ -267,6 +316,106 @@ void NativeMenuMac::OpenMenu(const mozilla::DesktopPoint& aPosition) {
     [nativeMenu popUpMenuPositioningItem:nil atLocation:locationOnScreen inView:nil];
   }
 }
+
+bool NativeMenuMac::Close() {
+  if (mOpenRunnable) {
+    // The menu was trying to open, but this Close() call interrupted it.
+    mOpenRunnable->Cancel();
+    mOpenRunnable = nullptr;
+  }
+  return mMenu->Close();
+}
+
+RefPtr<nsMenuX> NativeMenuMac::GetOpenMenuContainingElement(dom::Element* aElement) {
+  nsTArray<RefPtr<dom::Element>> submenuChain;
+  RefPtr<dom::Element> currentElement = aElement->GetParentElement();
+  while (currentElement && currentElement != mElement) {
+    if (currentElement->IsXULElement(nsGkAtoms::menu)) {
+      submenuChain.AppendElement(currentElement);
+    }
+    currentElement = currentElement->GetParentElement();
+  }
+  if (!currentElement) {
+    // aElement was not a descendent of mElement. Refuse to activate the item.
+    return nullptr;
+  }
+
+  // Traverse submenuChain from shallow to deep, to find the nsMenuX that contains aElement.
+  submenuChain.Reverse();
+  RefPtr<nsMenuX> menu = mMenu;
+  for (const auto& submenu : submenuChain) {
+    if (!menu->IsOpenForGecko()) {
+      // Refuse to descend into closed menus.
+      return nullptr;
+    }
+    Maybe<nsMenuX::MenuChild> menuChild = menu->GetItemForElement(submenu);
+    if (!menuChild || !menuChild->is<RefPtr<nsMenuX>>()) {
+      // Couldn't find submenu.
+      return nullptr;
+    }
+    menu = menuChild->as<RefPtr<nsMenuX>>();
+  }
+
+  if (!menu->IsOpenForGecko()) {
+    // Refuse to descend into closed menus.
+    return nullptr;
+  }
+  return menu;
+}
+
+static NSEventModifierFlags ConvertModifierFlags(Modifiers aModifiers) {
+  NSEventModifierFlags flags = 0;
+  if (aModifiers & MODIFIER_CONTROL) {
+    flags |= NSEventModifierFlagControl;
+  }
+  if (aModifiers & MODIFIER_ALT) {
+    flags |= NSEventModifierFlagOption;
+  }
+  if (aModifiers & MODIFIER_SHIFT) {
+    flags |= NSEventModifierFlagShift;
+  }
+  if (aModifiers & MODIFIER_META) {
+    flags |= NSEventModifierFlagCommand;
+  }
+  return flags;
+}
+
+void NativeMenuMac::ActivateItem(dom::Element* aItemElement, Modifiers aModifiers, int16_t aButton,
+                                 ErrorResult& aRv) {
+  RefPtr<nsMenuX> menu = GetOpenMenuContainingElement(aItemElement);
+  if (!menu) {
+    aRv.ThrowInvalidStateError("Menu containing menu item is not open");
+    return;
+  }
+  Maybe<nsMenuX::MenuChild> item = menu->GetItemForElement(aItemElement);
+  if (!item || !item->is<RefPtr<nsMenuItemX>>()) {
+    aRv.ThrowInvalidStateError("Could not find the supplied menu item");
+    return;
+  }
+
+  mMenu->ActivateItemAndClose(std::move(item->as<RefPtr<nsMenuItemX>>()),
+                              ConvertModifierFlags(aModifiers), aButton);
+}
+
+void NativeMenuMac::OpenSubmenu(dom::Element* aMenuElement) {
+  if (RefPtr<nsMenuX> menu = GetOpenMenuContainingElement(aMenuElement)) {
+    Maybe<nsMenuX::MenuChild> item = menu->GetItemForElement(aMenuElement);
+    if (item && item->is<RefPtr<nsMenuX>>()) {
+      item->as<RefPtr<nsMenuX>>()->MenuOpened();
+    }
+  }
+}
+
+void NativeMenuMac::CloseSubmenu(dom::Element* aMenuElement) {
+  if (RefPtr<nsMenuX> menu = GetOpenMenuContainingElement(aMenuElement)) {
+    Maybe<nsMenuX::MenuChild> item = menu->GetItemForElement(aMenuElement);
+    if (item && item->is<RefPtr<nsMenuX>>()) {
+      item->as<RefPtr<nsMenuX>>()->MenuClosed();
+    }
+  }
+}
+
+RefPtr<Element> NativeMenuMac::Element() { return mElement; }
 
 }  // namespace widget
 }  // namespace mozilla

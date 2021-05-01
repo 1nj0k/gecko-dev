@@ -105,8 +105,6 @@ class MacOSFontEntry final : public gfxFontEntry {
   // These fields are used by gfxMacFont, but stored in the font entry so
   // that only a single font instance needs to inspect the available
   // variations.
-  bool mCheckedForOpszAxis;
-  bool mHasOpszAxis;
   gfxFontVariationAxis mOpszAxis;
   float mAdjustedDefaultOpsz;
 
@@ -212,8 +210,6 @@ class gfxMacPlatformFontList final : public gfxPlatformFontList {
 
   void AddFamily(const nsACString& aFamilyName, FontVisibility aVisibility);
 
-  void ActivateFontsFromDir(nsIFile* aDir);
-
   gfxFontEntry* CreateFontEntry(
       mozilla::fontlist::Face* aFace,
       const mozilla::fontlist::Family* aFamily) override;
@@ -225,10 +221,6 @@ class gfxMacPlatformFontList final : public gfxPlatformFontList {
 
   void ReadFaceNamesForFamily(mozilla::fontlist::Family* aFamily,
                               bool aNeedFullnamePostscriptNames) override;
-
-#ifdef MOZ_BUNDLED_FONTS
-  void ActivateBundledFonts();
-#endif
 
   enum { kATSGenerationInitial = -1 };
 

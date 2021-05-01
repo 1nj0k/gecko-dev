@@ -36,8 +36,6 @@ NS_INTERFACE_MAP_BEGIN(nsViewSourceChannel)
                                      mHttpChannelInternal)
   NS_INTERFACE_MAP_ENTRY_CONDITIONAL(nsICachingChannel, mCachingChannel)
   NS_INTERFACE_MAP_ENTRY_CONDITIONAL(nsICacheInfoChannel, mCacheInfoChannel)
-  NS_INTERFACE_MAP_ENTRY_CONDITIONAL(nsIApplicationCacheChannel,
-                                     mApplicationCacheChannel)
   NS_INTERFACE_MAP_ENTRY_CONDITIONAL(nsIUploadChannel, mUploadChannel)
   NS_INTERFACE_MAP_ENTRY_CONDITIONAL(nsIFormPOSTActionChannel, mPostChannel)
   NS_INTERFACE_MAP_ENTRY_CONDITIONAL(nsIChildChannel, mChildChannel)
@@ -119,7 +117,6 @@ void nsViewSourceChannel::UpdateChannelInterfaces() {
   mHttpChannelInternal = do_QueryInterface(mChannel);
   mCachingChannel = do_QueryInterface(mChannel);
   mCacheInfoChannel = do_QueryInterface(mChannel);
-  mApplicationCacheChannel = do_QueryInterface(mChannel);
   mUploadChannel = do_QueryInterface(mChannel);
   mPostChannel = do_QueryInterface(mChannel);
   mChildChannel = do_QueryInterface(mChannel);
@@ -729,17 +726,15 @@ nsViewSourceChannel::SetTopLevelContentWindowId(uint64_t aWindowId) {
 }
 
 NS_IMETHODIMP
-nsViewSourceChannel::GetTopLevelOuterContentWindowId(uint64_t* aWindowId) {
-  return !mHttpChannel
-             ? NS_ERROR_NULL_POINTER
-             : mHttpChannel->GetTopLevelOuterContentWindowId(aWindowId);
+nsViewSourceChannel::GetTopBrowsingContextId(uint64_t* aId) {
+  return !mHttpChannel ? NS_ERROR_NULL_POINTER
+                       : mHttpChannel->GetTopBrowsingContextId(aId);
 }
 
 NS_IMETHODIMP
-nsViewSourceChannel::SetTopLevelOuterContentWindowId(uint64_t aWindowId) {
-  return !mHttpChannel
-             ? NS_ERROR_NULL_POINTER
-             : mHttpChannel->SetTopLevelOuterContentWindowId(aWindowId);
+nsViewSourceChannel::SetTopBrowsingContextId(uint64_t aId) {
+  return !mHttpChannel ? NS_ERROR_NULL_POINTER
+                       : mHttpChannel->SetTopBrowsingContextId(aId);
 }
 
 NS_IMETHODIMP
@@ -1056,21 +1051,6 @@ void nsViewSourceChannel::SetIPv4Disabled() {
 void nsViewSourceChannel::SetIPv6Disabled() {
   if (mHttpChannelInternal) {
     mHttpChannelInternal->SetIPv6Disabled();
-  }
-}
-
-bool nsViewSourceChannel::GetHasNonEmptySandboxingFlag() {
-  if (mHttpChannelInternal) {
-    return mHttpChannelInternal->GetHasNonEmptySandboxingFlag();
-  }
-  return false;
-}
-
-void nsViewSourceChannel::SetHasNonEmptySandboxingFlag(
-    bool aHasNonEmptySandboxingFlag) {
-  if (mHttpChannelInternal) {
-    mHttpChannelInternal->SetHasNonEmptySandboxingFlag(
-        aHasNonEmptySandboxingFlag);
   }
 }
 

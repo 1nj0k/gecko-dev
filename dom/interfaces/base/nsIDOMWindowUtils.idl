@@ -1414,13 +1414,6 @@ interface nsIDOMWindowUtils : nsISupports {
                                            in AString aPropertyName);
 
   /**
-   * DEPRECATED. Use WindowGlobalChild.outerWindowId instead.
-   *
-   * Get the id of the outer window of this window.
-   */
-  readonly attribute unsigned long long deprecatedOuterWindowID;
-
-  /**
    * Put the window into a state where scripts are frozen and events
    * suppressed, for use when the window has launched a modal prompt.
    */
@@ -1767,16 +1760,6 @@ interface nsIDOMWindowUtils : nsISupports {
    * otherwise.
    */
   readonly attribute boolean paintingSuppressed;
-
-  /**
-   * Returns an array of plugins on the page for opt-in activation.
-   *
-   * Cannot be accessed from unprivileged context (not content-accessible).
-   * Will throw a DOM security error if called without chrome privileges.
-   *
-   */
-  [implicit_jscontext]
-  readonly attribute jsval plugins;
 
   /**
    * Set the viewport size for the purposes of clamping scroll positions for

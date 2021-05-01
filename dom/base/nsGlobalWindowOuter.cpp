@@ -79,7 +79,7 @@
 #include "nsJSUtils.h"
 #include "jsapi.h"
 #include "jsfriendapi.h"
-#include "js/friend/StackLimits.h"  // js::CheckRecursionLimitConservativeDontReport
+#include "js/friend/StackLimits.h"  // js::AutoCheckRecursionLimit
 #include "js/friend/WindowProxy.h"  // js::IsWindowProxy, js::SetWindowProxy
 #include "js/PropertySpec.h"
 #include "js/Wrapper.h"
@@ -377,7 +377,7 @@ class nsOuterWindowProxy : public MaybeCrossOriginObject<js::Wrapper> {
    */
   bool getOwnPropertyDescriptor(
       JSContext* cx, JS::Handle<JSObject*> proxy, JS::Handle<jsid> id,
-      JS::MutableHandle<JS::PropertyDescriptor> desc) const override;
+      JS::MutableHandle<Maybe<JS::PropertyDescriptor>> desc) const override;
 
   /*
    * Implementation of the same-origin case of
@@ -539,7 +539,7 @@ class nsOuterWindowProxy : public MaybeCrossOriginObject<js::Wrapper> {
   // a "print" method.
   static bool MaybeGetPDFJSPrintMethod(
       JSContext* cx, JS::Handle<JSObject*> proxy,
-      JS::MutableHandle<JS::PropertyDescriptor> desc);
+      JS::MutableHandle<Maybe<JS::PropertyDescriptor>> desc);
 
   // The actual "print" method we use for the PDFJS case.
   static bool PDFJSPrintMethod(JSContext* cx, unsigned argc, JS::Value* vp);
@@ -603,17 +603,18 @@ static bool IsNonConfigurableReadonlyPrimitiveGlobalProp(JSContext* cx,
 
 bool nsOuterWindowProxy::getOwnPropertyDescriptor(
     JSContext* cx, JS::Handle<JSObject*> proxy, JS::Handle<jsid> id,
-    JS::MutableHandle<JS::PropertyDescriptor> desc) const {
+    JS::MutableHandle<Maybe<JS::PropertyDescriptor>> desc) const {
   // First check for indexed access.  This is
   // https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-getownproperty
   // step 2, mostly.
+  JS::Rooted<JS::Value> subframe(cx);
   bool found;
-  if (!GetSubframeWindow(cx, proxy, id, desc.value(), found)) {
+  if (!GetSubframeWindow(cx, proxy, id, &subframe, found)) {
     return false;
   }
   if (found) {
     // Step 2.4.
-    FillPropertyDescriptor(desc, proxy, true);
+    FillPropertyDescriptor(cx, desc, proxy, subframe, true);
     return true;
   }
 
@@ -651,8 +652,9 @@ bool nsOuterWindowProxy::getOwnPropertyDescriptor(
       }
 
 #ifndef RELEASE_OR_BETA  // To be turned on in bug 1496510.
-      if (!IsNonConfigurableReadonlyPrimitiveGlobalProp(cx, id)) {
-        desc.setConfigurable(true);
+      if (desc.isSome() &&
+          !IsNonConfigurableReadonlyPrimitiveGlobalProp(cx, id)) {
+        (*desc).setConfigurable(true);
       }
 #endif
     }
@@ -667,7 +669,7 @@ bool nsOuterWindowProxy::getOwnPropertyDescriptor(
   }
 
   // Step 5
-  if (desc.object()) {
+  if (desc.isSome()) {
     return true;
   }
 
@@ -679,7 +681,7 @@ bool nsOuterWindowProxy::getOwnPropertyDescriptor(
       return false;
     }
 
-    if (desc.object()) {
+    if (desc.isSome()) {
       return true;
     }
   }
@@ -696,7 +698,7 @@ bool nsOuterWindowProxy::getOwnPropertyDescriptor(
       if (!ToJSValue(cx, WindowProxyHolder(childDOMWin), &childValue)) {
         return false;
       }
-      FillPropertyDescriptor(desc, proxy, childValue,
+      FillPropertyDescriptor(cx, desc, proxy, childValue,
                              /* readonly = */ true,
                              /* enumerable = */ false);
       return true;
@@ -737,12 +739,12 @@ bool nsOuterWindowProxy::definePropertySameOrigin(
       return true;
     }
 
-    JS::Rooted<JS::PropertyDescriptor> existingDesc(cx);
+    JS::Rooted<Maybe<JS::PropertyDescriptor>> existingDesc(cx);
     ok = js::Wrapper::getOwnPropertyDescriptor(cx, proxy, id, &existingDesc);
     if (!ok) {
       return false;
     }
-    if (!existingDesc.object() || existingDesc.configurable()) {
+    if (existingDesc.isNothing() || existingDesc->configurable()) {
       // We have no existing property, or its descriptor is already configurable
       // (on the Window itself, where things really can be non-configurable).
       // So we failed for some other reason, which we should propagate out.
@@ -1110,8 +1112,9 @@ enum { PDFJS_SLOT_CALLEE = 0 };
 // static
 bool nsOuterWindowProxy::MaybeGetPDFJSPrintMethod(
     JSContext* cx, JS::Handle<JSObject*> proxy,
-    JS::MutableHandle<JS::PropertyDescriptor> desc) {
+    JS::MutableHandle<Maybe<JS::PropertyDescriptor>> desc) {
   MOZ_ASSERT(proxy);
+  MOZ_ASSERT(!desc.isSome());
 
   nsGlobalWindowOuter* outer = GetOuterWindow(proxy);
   nsGlobalWindowInner* inner =
@@ -1172,10 +1175,12 @@ bool nsOuterWindowProxy::MaybeGetPDFJSPrintMethod(
   js::SetFunctionNativeReserved(funObj, PDFJS_SLOT_CALLEE, targetFunc);
 
   JS::Rooted<JS::Value> funVal(cx, JS::ObjectValue(*funObj));
+  JS::Rooted<JS::PropertyDescriptor> pd(cx);
   // JSPROP_ENUMERATE because that's what it would have been in the same-origin
   // case without the PDF viewer messing with things.
-  desc.setDataDescriptor(funVal, JSPROP_ENUMERATE);
-  desc.object().set(proxy);
+  pd.setDataDescriptor(funVal, JSPROP_ENUMERATE);
+  pd.object().set(proxy);
+  desc.set(Some(pd.get()));
   return true;
 }
 
@@ -2091,7 +2096,8 @@ nsresult nsGlobalWindowOuter::SetNewDocument(Document* aDocument,
   // transplanting code, since it has no good way to handle errors. This uses
   // the untrusted script limit, which is not strictly necessary since no
   // actual script should run.
-  if (!js::CheckRecursionLimitConservativeDontReport(cx)) {
+  js::AutoCheckRecursionLimit recursion(cx);
+  if (!recursion.checkConservativeDontReport(cx)) {
     NS_WARNING("Overrecursion in SetNewDocument");
     return NS_ERROR_FAILURE;
   }
@@ -3799,7 +3805,7 @@ Maybe<CSSIntSize> nsGlobalWindowOuter::GetRDMDeviceSize(
 
   // Bug 1576256: This does not work for cross-process subframes.
   const Document* topInProcessContentDoc =
-      aDocument.GetTopLevelContentDocument();
+      aDocument.GetTopLevelContentDocumentIfSameProcess();
   BrowsingContext* bc = topInProcessContentDoc
                             ? topInProcessContentDoc->GetBrowsingContext()
                             : nullptr;
@@ -4783,50 +4789,60 @@ void nsGlobalWindowOuter::EnsureReflowFlushAndPaint() {
 }
 
 // static
-void nsGlobalWindowOuter::MakeScriptDialogTitle(
-    nsAString& aOutTitle, nsIPrincipal* aSubjectPrincipal) {
+void nsGlobalWindowOuter::MakeMessageWithPrincipal(
+    nsAString& aOutMessage, nsIPrincipal* aSubjectPrincipal, bool aUseHostPort,
+    const char* aNullMessage, const char* aContentMessage,
+    const char* aFallbackMessage) {
   MOZ_ASSERT(aSubjectPrincipal);
 
-  aOutTitle.Truncate();
+  aOutMessage.Truncate();
 
   // Try to get a host from the running principal -- this will do the
   // right thing for javascript: and data: documents.
 
-  nsAutoCString prepath;
+  nsAutoCString contentDesc;
 
   if (aSubjectPrincipal->GetIsNullPrincipal()) {
     nsContentUtils::GetLocalizedString(
-        nsContentUtils::eCOMMON_DIALOG_PROPERTIES,
-        "ScriptDlgNullPrincipalHeading", aOutTitle);
+        nsContentUtils::eCOMMON_DIALOG_PROPERTIES, aNullMessage, aOutMessage);
   } else {
     auto* addonPolicy = BasePrincipal::Cast(aSubjectPrincipal)->AddonPolicy();
     if (addonPolicy) {
       nsContentUtils::FormatLocalizedString(
-          aOutTitle, nsContentUtils::eCOMMON_DIALOG_PROPERTIES,
-          "ScriptDlgHeading", addonPolicy->Name());
+          aOutMessage, nsContentUtils::eCOMMON_DIALOG_PROPERTIES,
+          aContentMessage, addonPolicy->Name());
     } else {
-      nsresult rv = aSubjectPrincipal->GetExposablePrePath(prepath);
-      if (NS_SUCCEEDED(rv) && !prepath.IsEmpty()) {
-        NS_ConvertUTF8toUTF16 ucsPrePath(prepath);
+      nsresult rv = NS_ERROR_FAILURE;
+      if (aUseHostPort) {
+        nsCOMPtr<nsIURI> uri = aSubjectPrincipal->GetURI();
+        if (uri) {
+          rv = uri->GetDisplayHostPort(contentDesc);
+        }
+      }
+      if (!aUseHostPort || NS_FAILED(rv)) {
+        rv = aSubjectPrincipal->GetExposablePrePath(contentDesc);
+      }
+      if (NS_SUCCEEDED(rv) && !contentDesc.IsEmpty()) {
+        NS_ConvertUTF8toUTF16 ucsPrePath(contentDesc);
         nsContentUtils::FormatLocalizedString(
-            aOutTitle, nsContentUtils::eCOMMON_DIALOG_PROPERTIES,
-            "ScriptDlgHeading", ucsPrePath);
+            aOutMessage, nsContentUtils::eCOMMON_DIALOG_PROPERTIES,
+            aContentMessage, ucsPrePath);
       }
     }
   }
 
-  if (aOutTitle.IsEmpty()) {
+  if (aOutMessage.IsEmpty()) {
     // We didn't find a host so use the generic heading
     nsContentUtils::GetLocalizedString(
-        nsContentUtils::eCOMMON_DIALOG_PROPERTIES, "ScriptDlgGenericHeading",
-        aOutTitle);
+        nsContentUtils::eCOMMON_DIALOG_PROPERTIES, aFallbackMessage,
+        aOutMessage);
   }
 
   // Just in case
-  if (aOutTitle.IsEmpty()) {
+  if (aOutMessage.IsEmpty()) {
     NS_WARNING(
         "could not get ScriptDlgGenericHeading string from string bundle");
-    aOutTitle.AssignLiteral("[Script]");
+    aOutMessage.AssignLiteral("[Script]");
   }
 }
 
@@ -4904,7 +4920,9 @@ bool nsGlobalWindowOuter::AlertOrConfirm(bool aAlert, const nsAString& aMessage,
   EnsureReflowFlushAndPaint();
 
   nsAutoString title;
-  MakeScriptDialogTitle(title, &aSubjectPrincipal);
+  MakeMessageWithPrincipal(title, &aSubjectPrincipal, false,
+                           "ScriptDlgNullPrincipalHeading", "ScriptDlgHeading",
+                           "ScriptDlgGenericHeading");
 
   // Remove non-terminating null characters from the
   // string. See bug #310037.
@@ -4938,8 +4956,9 @@ bool nsGlobalWindowOuter::AlertOrConfirm(bool aAlert, const nsAString& aMessage,
   if (ShouldPromptToBlockDialogs()) {
     bool disallowDialog = false;
     nsAutoString label;
-    nsContentUtils::GetLocalizedString(
-        nsContentUtils::eCOMMON_DIALOG_PROPERTIES, "ScriptDialogLabel", label);
+    MakeMessageWithPrincipal(
+        label, &aSubjectPrincipal, true, "ScriptDialogLabelNullPrincipal",
+        "ScriptDialogLabelContentPrincipal", "ScriptDialogLabelNullPrincipal");
 
     aError = aAlert
                  ? prompt->AlertCheck(title.get(), final.get(), label.get(),
@@ -4993,7 +5012,9 @@ void nsGlobalWindowOuter::PromptOuter(const nsAString& aMessage,
   EnsureReflowFlushAndPaint();
 
   nsAutoString title;
-  MakeScriptDialogTitle(title, &aSubjectPrincipal);
+  MakeMessageWithPrincipal(title, &aSubjectPrincipal, false,
+                           "ScriptDlgNullPrincipalHeading", "ScriptDlgHeading",
+                           "ScriptDlgGenericHeading");
 
   // Remove non-terminating null characters from the
   // string. See bug #310037.
@@ -7405,7 +7426,7 @@ void nsGlobalWindowOuter::SetCursorOuter(const nsACString& aCursor,
 
     // Call esm and set cursor.
     aError = presContext->EventStateManager()->SetCursor(
-        cursor, nullptr, Nothing(), widget, true);
+        cursor, nullptr, 1.0f, Nothing(), widget, true);
   }
 }
 

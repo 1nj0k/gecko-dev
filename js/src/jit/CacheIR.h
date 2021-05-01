@@ -209,7 +209,8 @@ class TypedOperandId : public OperandId {
   _(Call)                 \
   _(UnaryArith)           \
   _(BinaryArith)          \
-  _(NewObject)
+  _(NewObject)            \
+  _(NewArray)
 
 enum class CacheKind : uint8_t {
 #define DEFINE_KIND(kind) kind,
@@ -248,6 +249,7 @@ class StubField {
     RawInt32,
     RawPointer,
     Shape,
+    GetterSetter,
     JSObject,
     Symbol,
     String,
@@ -655,6 +657,10 @@ class MOZ_RAII CacheIRWriter : public JS::CustomAutoRooter {
     assertSameZone(shape);
     addStubField(uintptr_t(shape), StubField::Type::Shape);
   }
+  void writeGetterSetterField(GetterSetter* gs) {
+    MOZ_ASSERT(gs);
+    addStubField(uintptr_t(gs), StubField::Type::GetterSetter);
+  }
   void writeObjectField(JSObject* obj) {
     MOZ_ASSERT(obj);
     assertSameCompartment(obj);
@@ -734,6 +740,11 @@ class MOZ_RAII CacheIRWriter : public JS::CustomAutoRooter {
 
   void writeWasmValTypeImm(wasm::ValType::Kind kind) {
     static_assert(unsigned(wasm::TypeCode::Limit) <= UINT8_MAX);
+    buffer_.writeByte(uint8_t(kind));
+  }
+
+  void writeAllocKindImm(gc::AllocKind kind) {
+    static_assert(unsigned(gc::AllocKind::LIMIT) <= UINT8_MAX);
     buffer_.writeByte(uint8_t(kind));
   }
 
@@ -1137,6 +1148,7 @@ class MOZ_RAII CacheIRReader {
   wasm::ValType::Kind wasmValType() {
     return wasm::ValType::Kind(buffer_.readByte());
   }
+  gc::AllocKind allocKind() { return gc::AllocKind(buffer_.readByte()); }
 
   Scalar::Type scalarType() { return Scalar::Type(buffer_.readByte()); }
   uint32_t rttValueKey() { return buffer_.readByte(); }
@@ -1202,6 +1214,7 @@ class MOZ_RAII CacheIRCloner {
   int64_t readStubInt64(uint32_t offset);
 
   Shape* getShapeField(uint32_t stubOffset);
+  GetterSetter* getGetterSetterField(uint32_t stubOffset);
   JSObject* getObjectField(uint32_t stubOffset);
   JSString* getStringField(uint32_t stubOffset);
   JSAtom* getAtomField(uint32_t stubOffset);
@@ -1223,6 +1236,7 @@ class MOZ_RAII IRGenerator {
   jsbytecode* pc_;
   CacheKind cacheKind_;
   ICState::Mode mode_;
+  bool isFirstStub_;
 
   IRGenerator(const IRGenerator&) = delete;
   IRGenerator& operator=(const IRGenerator&) = delete;
@@ -1246,7 +1260,7 @@ class MOZ_RAII IRGenerator {
 
  public:
   explicit IRGenerator(JSContext* cx, HandleScript script, jsbytecode* pc,
-                       CacheKind cacheKind, ICState::Mode mode);
+                       CacheKind cacheKind, ICState state);
 
   const CacheIRWriter& writerRef() const { return writer; }
   CacheKind cacheKind() const { return cacheKind_; }
@@ -1364,7 +1378,7 @@ class MOZ_RAII GetPropIRGenerator : public IRGenerator {
 
  public:
   GetPropIRGenerator(JSContext* cx, HandleScript script, jsbytecode* pc,
-                     ICState::Mode mode, CacheKind cacheKind, HandleValue val,
+                     ICState state, CacheKind cacheKind, HandleValue val,
                      HandleValue idVal);
 
   AttachDecision tryAttachStub();
@@ -1383,8 +1397,7 @@ class MOZ_RAII GetNameIRGenerator : public IRGenerator {
 
  public:
   GetNameIRGenerator(JSContext* cx, HandleScript script, jsbytecode* pc,
-                     ICState::Mode mode, HandleObject env,
-                     HandlePropertyName name);
+                     ICState state, HandleObject env, HandlePropertyName name);
 
   AttachDecision tryAttachStub();
 };
@@ -1401,8 +1414,7 @@ class MOZ_RAII BindNameIRGenerator : public IRGenerator {
 
  public:
   BindNameIRGenerator(JSContext* cx, HandleScript script, jsbytecode* pc,
-                      ICState::Mode mode, HandleObject env,
-                      HandlePropertyName name);
+                      ICState state, HandleObject env, HandlePropertyName name);
 
   AttachDecision tryAttachStub();
 };
@@ -1490,8 +1502,8 @@ class MOZ_RAII SetPropIRGenerator : public IRGenerator {
 
  public:
   SetPropIRGenerator(JSContext* cx, HandleScript script, jsbytecode* pc,
-                     CacheKind cacheKind, ICState::Mode mode,
-                     HandleValue lhsVal, HandleValue idVal, HandleValue rhsVal);
+                     CacheKind cacheKind, ICState state, HandleValue lhsVal,
+                     HandleValue idVal, HandleValue rhsVal);
 
   AttachDecision tryAttachStub();
   AttachDecision tryAttachAddSlotStub(HandleShape oldShape);
@@ -1533,7 +1545,7 @@ class MOZ_RAII HasPropIRGenerator : public IRGenerator {
  public:
   // NOTE: Argument order is PROPERTY, OBJECT
   HasPropIRGenerator(JSContext* cx, HandleScript script, jsbytecode* pc,
-                     ICState::Mode mode, CacheKind cacheKind, HandleValue idVal,
+                     ICState state, CacheKind cacheKind, HandleValue idVal,
                      HandleValue val);
 
   AttachDecision tryAttachStub();
@@ -1550,7 +1562,7 @@ class MOZ_RAII CheckPrivateFieldIRGenerator : public IRGenerator {
 
  public:
   CheckPrivateFieldIRGenerator(JSContext* cx, HandleScript script,
-                               jsbytecode* pc, ICState::Mode mode,
+                               jsbytecode* pc, ICState state,
                                CacheKind cacheKind, HandleValue idVal,
                                HandleValue val);
   AttachDecision tryAttachStub();
@@ -1563,7 +1575,7 @@ class MOZ_RAII InstanceOfIRGenerator : public IRGenerator {
   void trackAttached(const char* name);
 
  public:
-  InstanceOfIRGenerator(JSContext*, HandleScript, jsbytecode*, ICState::Mode,
+  InstanceOfIRGenerator(JSContext*, HandleScript, jsbytecode*, ICState,
                         HandleValue, HandleObject);
 
   AttachDecision tryAttachStub();
@@ -1577,8 +1589,8 @@ class MOZ_RAII TypeOfIRGenerator : public IRGenerator {
   void trackAttached(const char* name);
 
  public:
-  TypeOfIRGenerator(JSContext* cx, HandleScript, jsbytecode* pc,
-                    ICState::Mode mode, HandleValue value);
+  TypeOfIRGenerator(JSContext* cx, HandleScript, jsbytecode* pc, ICState state,
+                    HandleValue value);
 
   AttachDecision tryAttachStub();
 };
@@ -1590,7 +1602,7 @@ class MOZ_RAII GetIteratorIRGenerator : public IRGenerator {
 
  public:
   GetIteratorIRGenerator(JSContext* cx, HandleScript, jsbytecode* pc,
-                         ICState::Mode mode, HandleValue value);
+                         ICState state, HandleValue value);
 
   AttachDecision tryAttachStub();
 
@@ -1605,7 +1617,7 @@ class MOZ_RAII OptimizeSpreadCallIRGenerator : public IRGenerator {
 
  public:
   OptimizeSpreadCallIRGenerator(JSContext* cx, HandleScript script,
-                                jsbytecode* pc, ICState::Mode mode,
+                                jsbytecode* pc, ICState state,
                                 HandleValue value);
 
   AttachDecision tryAttachStub();
@@ -1619,7 +1631,6 @@ enum class ScriptedThisResult { NoAction, UninitializedThis, TemplateObject };
 class MOZ_RAII CallIRGenerator : public IRGenerator {
  private:
   JSOp op_;
-  bool isFirstStub_;
   uint32_t argc_;
   HandleValue callee_;
   HandleValue thisval_;
@@ -1760,9 +1771,9 @@ class MOZ_RAII CallIRGenerator : public IRGenerator {
 
  public:
   CallIRGenerator(JSContext* cx, HandleScript script, jsbytecode* pc, JSOp op,
-                  ICState::Mode mode, bool isFirstStub, uint32_t argc,
-                  HandleValue callee, HandleValue thisval,
-                  HandleValue newTarget, HandleValueArray args);
+                  ICState state, uint32_t argc, HandleValue callee,
+                  HandleValue thisval, HandleValue newTarget,
+                  HandleValueArray args);
 
   AttachDecision tryAttachStub();
 };
@@ -1797,9 +1808,8 @@ class MOZ_RAII CompareIRGenerator : public IRGenerator {
   void trackAttached(const char* name);
 
  public:
-  CompareIRGenerator(JSContext* cx, HandleScript, jsbytecode* pc,
-                     ICState::Mode mode, JSOp op, HandleValue lhsVal,
-                     HandleValue rhsVal);
+  CompareIRGenerator(JSContext* cx, HandleScript, jsbytecode* pc, ICState state,
+                     JSOp op, HandleValue lhsVal, HandleValue rhsVal);
 
   AttachDecision tryAttachStub();
 };
@@ -1818,8 +1828,8 @@ class MOZ_RAII ToBoolIRGenerator : public IRGenerator {
   void trackAttached(const char* name);
 
  public:
-  ToBoolIRGenerator(JSContext* cx, HandleScript, jsbytecode* pc,
-                    ICState::Mode mode, HandleValue val);
+  ToBoolIRGenerator(JSContext* cx, HandleScript, jsbytecode* pc, ICState state,
+                    HandleValue val);
 
   AttachDecision tryAttachStub();
 };
@@ -1831,7 +1841,7 @@ class MOZ_RAII GetIntrinsicIRGenerator : public IRGenerator {
 
  public:
   GetIntrinsicIRGenerator(JSContext* cx, HandleScript, jsbytecode* pc,
-                          ICState::Mode, HandleValue val);
+                          ICState state, HandleValue val);
 
   AttachDecision tryAttachStub();
 };
@@ -1852,7 +1862,7 @@ class MOZ_RAII UnaryArithIRGenerator : public IRGenerator {
 
  public:
   UnaryArithIRGenerator(JSContext* cx, HandleScript, jsbytecode* pc,
-                        ICState::Mode mode, JSOp op, HandleValue val,
+                        ICState state, JSOp op, HandleValue val,
                         HandleValue res);
 
   AttachDecision tryAttachStub();
@@ -1870,7 +1880,7 @@ class MOZ_RAII ToPropertyKeyIRGenerator : public IRGenerator {
 
  public:
   ToPropertyKeyIRGenerator(JSContext* cx, HandleScript, jsbytecode* pc,
-                           ICState::Mode mode, HandleValue val);
+                           ICState state, HandleValue val);
 
   AttachDecision tryAttachStub();
 };
@@ -1895,10 +1905,26 @@ class MOZ_RAII BinaryArithIRGenerator : public IRGenerator {
 
  public:
   BinaryArithIRGenerator(JSContext* cx, HandleScript, jsbytecode* pc,
-                         ICState::Mode, JSOp op, HandleValue lhs,
+                         ICState state, JSOp op, HandleValue lhs,
                          HandleValue rhs, HandleValue res);
 
   AttachDecision tryAttachStub();
+};
+
+class MOZ_RAII NewArrayIRGenerator : public IRGenerator {
+#ifdef JS_CACHEIR_SPEW
+  JSOp op_;
+#endif
+  HandleObject templateObject_;
+
+  void trackAttached(const char* name);
+
+ public:
+  NewArrayIRGenerator(JSContext* cx, HandleScript, jsbytecode* pc,
+                      ICState state, JSOp op, HandleObject templateObj);
+
+  AttachDecision tryAttachStub();
+  AttachDecision tryAttachArrayObject();
 };
 
 class MOZ_RAII NewObjectIRGenerator : public IRGenerator {
@@ -1911,9 +1937,10 @@ class MOZ_RAII NewObjectIRGenerator : public IRGenerator {
 
  public:
   NewObjectIRGenerator(JSContext* cx, HandleScript, jsbytecode* pc,
-                       ICState::Mode, JSOp op, HandleObject templateObj);
+                       ICState state, JSOp op, HandleObject templateObj);
 
   AttachDecision tryAttachStub();
+  AttachDecision tryAttachPlainObject();
 };
 
 // Retrieve Xray JIT info set by the embedder.

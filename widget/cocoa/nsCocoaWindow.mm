@@ -6,6 +6,7 @@
 
 #include "nsCocoaWindow.h"
 
+#include "AppearanceOverride.h"
 #include "NativeKeyBindings.h"
 #include "ScreenHelperCocoa.h"
 #include "TextInputHandler.h"
@@ -33,6 +34,7 @@
 #include "nsCocoaFeatures.h"
 #include "nsIScreenManager.h"
 #include "nsIWidgetListener.h"
+#include "SDKDeclarations.h"
 #include "VibrancyManager.h"
 #include "nsPresContext.h"
 #include "nsDocShell.h"
@@ -109,6 +111,11 @@ NS_IMPL_ISUPPORTS_INHERITED(nsCocoaWindow, Inherited, nsPIWidgetCocoa)
 static void RollUpPopups() {
   nsIRollupListener* rollupListener = nsBaseWidget::GetActiveRollupListener();
   NS_ENSURE_TRUE_VOID(rollupListener);
+
+  if (rollupListener->RollupNativeMenu()) {
+    return;
+  }
+
   nsCOMPtr<nsIWidget> rollupWidget = rollupListener->GetRollupWidget();
   if (!rollupWidget) return;
   rollupListener->Rollup(0, true, nullptr, nullptr);
@@ -140,6 +147,7 @@ nsCocoaWindow::nsCocoaWindow()
       mAspectRatioLocked(false),
       mNumModalDescendents(0),
       mWindowAnimationBehavior(NSWindowAnimationBehaviorDefault),
+      mWindowAppearance(nsIWidget::WindowAppearance::eSystem),
       mWasShown(false) {
   // Disable automatic tabbing. We need to do this before we
   // orderFront any of our windows.
@@ -252,16 +260,6 @@ static void FitRectToVisibleAreaForScreen(DesktopIntRect& aRect, NSScreen* aScre
   }
 }
 
-// Some applications use native popup windows
-// (native context menus, native tooltips)
-static bool UseNativePopupWindows() {
-#ifdef MOZ_USE_NATIVE_POPUP_WINDOWS
-  return true;
-#else
-  return false;
-#endif /* MOZ_USE_NATIVE_POPUP_WINDOWS */
-}
-
 DesktopToLayoutDeviceScale ParentBackingScaleFactor(nsIWidget* aParent, NSView* aParentView) {
   if (aParent) {
     return aParent->GetDesktopToDeviceScale();
@@ -328,9 +326,6 @@ nsresult nsCocoaWindow::Create(nsIWidget* aParent, nsNativeWidget aNativeParent,
   mParent = aParent;
   mAncestorLink = aParent;
   mAlwaysOnTop = aInitData->mAlwaysOnTop;
-
-  // Applications that use native popups don't want us to create popup windows.
-  if ((mWindowType == eWindowType_popup) && UseNativePopupWindows()) return NS_OK;
 
   // If we have a parent widget, the new widget will be offset from the
   // parent widget by aRect.{x,y}. Otherwise, we'll use aRect for the
@@ -549,6 +544,13 @@ nsresult nsCocoaWindow::CreateNativeWindow(const NSRect& aRect, nsBorderStyle aB
 
   [[WindowDataMap sharedWindowDataMap] ensureDataForWindow:mWindow];
   mWindowMadeHere = true;
+
+  if (@available(macOS 10.14, *)) {
+    // When the window's appearance is set to nil (no override), make sure it respects the global
+    // aqua override.
+    mWindow.appearanceSource = MOZGlobalAppearance.sharedInstance;
+  }
+  [mWindow setWindowAppearance:mWindowAppearance];
 
   return NS_OK;
 
@@ -1860,10 +1862,10 @@ int32_t nsCocoaWindow::RoundsWidgetCoordinatesTo() {
   return 1;
 }
 
-void nsCocoaWindow::SetCursor(nsCursor aDefaultCursor, imgIContainer* aCursorImage,
-                              uint32_t aHotspotX, uint32_t aHotspotY) {
-  if (mPopupContentView)
-    mPopupContentView->SetCursor(aDefaultCursor, aCursorImage, aHotspotX, aHotspotY);
+void nsCocoaWindow::SetCursor(const Cursor& aCursor) {
+  if (mPopupContentView) {
+    mPopupContentView->SetCursor(aCursor);
+  }
 }
 
 nsresult nsCocoaWindow::SetTitle(const nsAString& aTitle) {
@@ -2423,6 +2425,15 @@ void nsCocoaWindow::SetDrawsTitle(bool aDrawTitle) {
   NS_OBJC_END_TRY_IGNORE_BLOCK;
 }
 
+/* virtual */ void nsCocoaWindow::SetWindowAppearance(nsIWidget::WindowAppearance aAppearance) {
+  NS_OBJC_BEGIN_TRY_IGNORE_BLOCK;
+
+  mWindowAppearance = aAppearance;
+  [mWindow setWindowAppearance:mWindowAppearance];
+
+  NS_OBJC_END_TRY_IGNORE_BLOCK;
+}
+
 nsresult nsCocoaWindow::SetNonClientMargins(LayoutDeviceIntMargin& margins) {
   NS_OBJC_BEGIN_TRY_BLOCK_RETURN;
 
@@ -2551,6 +2562,22 @@ bool nsCocoaWindow::AsyncPanZoomEnabled() const {
     return mPopupContentView->AsyncPanZoomEnabled();
   }
   return nsBaseWidget::AsyncPanZoomEnabled();
+}
+
+bool nsCocoaWindow::StartAsyncAutoscroll(const ScreenPoint& aAnchorLocation,
+                                         const ScrollableLayerGuid& aGuid) {
+  if (mPopupContentView) {
+    return mPopupContentView->StartAsyncAutoscroll(aAnchorLocation, aGuid);
+  }
+  return nsBaseWidget::StartAsyncAutoscroll(aAnchorLocation, aGuid);
+}
+
+void nsCocoaWindow::StopAsyncAutoscroll(const ScrollableLayerGuid& aGuid) {
+  if (mPopupContentView) {
+    mPopupContentView->StopAsyncAutoscroll(aGuid);
+    return;
+  }
+  nsBaseWidget::StopAsyncAutoscroll(aGuid);
 }
 
 already_AddRefed<nsIWidget> nsIWidget::CreateTopLevelWindow() {
@@ -2953,12 +2980,6 @@ static NSMutableSet* gSwizzledFrameViewClasses = nil;
 - (void)_setNeedsDisplayInRect:(NSRect)aRect;
 @end
 
-#if !defined(MAC_OS_X_VERSION_10_12_2) || MAC_OS_X_VERSION_MAX_ALLOWED < MAC_OS_X_VERSION_10_12_2
-@interface NSView (NSTouchBarProvider)
-- (NSTouchBar*)makeTouchBar;
-@end
-#endif
-
 @interface NSView (NSVisualEffectViewSetMaskImage)
 - (void)setMaskImage:(NSImage*)image;
 @end
@@ -3208,6 +3229,29 @@ static const NSString* kStateWantsTitleDrawn = @"wantsTitleDrawn";
   return mDrawTitle;
 }
 
+- (void)setWindowAppearance:(nsIWidget::WindowAppearance)aAppearance {
+  if (@available(macOS 10.14, *)) {
+    switch (aAppearance) {
+      case nsIWidget::WindowAppearance::eLight:
+        self.appearance = [NSAppearance appearanceNamed:NSAppearanceNameAqua];
+        break;
+      // eDark is currently disabled.
+      // The sheet window background always follows the sheetParent window's
+      // appearance. So we can only use the dark appearance if child sheet
+      // contents use text colors that are compatible with the dark appearance.
+      // But at the moment, sheet documents always use the Light ColorScheme for
+      // their system colors, resulting in black-on-dark text. See bug 1704016.
+      /*case nsIWidget::WindowAppearance::eDark:
+        self.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
+        break;*/
+      default:
+        // nil means "inherit effectiveAppearance from self.appearanceSource".
+        self.appearance = nil;
+        break;
+    }
+  }
+}
+
 - (NSView*)trackingAreaView {
   NSView* contentView = [self contentView];
   return [contentView superview] ? [contentView superview] : contentView;
@@ -3405,18 +3449,6 @@ static const NSString* kStateWantsTitleDrawn = @"wantsTitleDrawn";
 
 @end
 
-#if !defined(MAC_OS_VERSION_11_0) || MAC_OS_X_VERSION_MAX_ALLOWED < MAC_OS_VERSION_11_0
-typedef NS_ENUM(NSInteger, NSTitlebarSeparatorStyle) {
-  NSTitlebarSeparatorStyleAutomatic,
-  NSTitlebarSeparatorStyleNone,
-  NSTitlebarSeparatorStyleLine,
-  NSTitlebarSeparatorStyleShadow
-};
-@interface NSWindow (NSTitlebarSeparatorStyle)
-@property NSTitlebarSeparatorStyle titlebarSeparatorStyle;
-@end
-#endif
-
 @interface MOZTitlebarAccessoryView : NSView
 @end
 
@@ -3557,6 +3589,8 @@ typedef NS_ENUM(NSInteger, NSTitlebarSeparatorStyle) {
     [[self mainChildView] ensureNextCompositeIsAtomicWithMainThreadPaint];
     NSNumber* revealAmount = (change[NSKeyValueChangeNewKey]);
     [self updateTitlebarShownAmount:[revealAmount doubleValue]];
+  } else {
+    [super observeValueForKeyPath:keyPath ofObject:object change:change context:context];
   }
 }
 
@@ -3863,6 +3897,7 @@ static const NSUInteger kWindowShadowOptionsTooltipMojaveOrLater = 4;
     case StyleWindowShadow::Default:  // we treat "default" as "default panel"
     case StyleWindowShadow::Menu:
     case StyleWindowShadow::Sheet:
+    case StyleWindowShadow::Cliprounded:  // this is a Windows-only value.
       return kWindowShadowOptionsMenu;
 
     case StyleWindowShadow::Tooltip:

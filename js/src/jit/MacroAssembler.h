@@ -409,7 +409,39 @@ class MacroAssembler : public MacroAssemblerSpecific {
 
  public:
   // ===============================================================
-  // Stack manipulation functions.
+  // Stack manipulation functions -- sets of registers.
+
+  // Approximately speaking, the following routines must use the same memory
+  // layout.  Any inconsistencies will certainly lead to crashing in generated
+  // code:
+  //
+  //   PushRegsInMaskSizeInBytes PushRegsInMask storeRegsInMask
+  //   PopRegsInMask PopRegsInMaskIgnore
+  //
+  // To be more exact, the invariants are:
+  //
+  // * The save area is conceptually viewed as starting at a highest address
+  //   and working down to some lower address.
+  //
+  // * PushRegsInMask, storeRegsInMask and PopRegsInMask{Ignore} must use
+  //   exactly the same memory layout, when starting from the abovementioned
+  //   highest address.
+  //
+  // * PushRegsInMaskSizeInBytes must produce a value which is exactly equal
+  //   to the change in the machine's stack pointer register as a result of
+  //   calling PushRegsInMask or PopRegsInMask{Ignore}.  This value must be at
+  //   least uintptr_t-aligned on the target, and may be more aligned than that.
+  //
+  // * PushRegsInMaskSizeInBytes must produce a value which is greater than or
+  //   equal to the amount of space used by storeRegsInMask.
+  //
+  // * Hence, regardless of whether the save area is created with
+  //   storeRegsInMask or PushRegsInMask, it is guaranteed to fit inside an
+  //   area of size calculated by PushRegsInMaskSizeInBytes.
+
+  // The size of the area used by PushRegsInMask.
+  size_t PushRegsInMaskSizeInBytes(LiveRegisterSet set)
+      DEFINED_ON(arm, arm64, mips32, mips64, x86_shared);
 
   void PushRegsInMask(LiveRegisterSet set)
       DEFINED_ON(arm, arm64, mips32, mips64, x86_shared);
@@ -426,6 +458,9 @@ class MacroAssembler : public MacroAssemblerSpecific {
   void PopRegsInMaskIgnore(LiveRegisterSet set, LiveRegisterSet ignore)
       DEFINED_ON(arm, arm64, mips32, mips64, x86_shared);
 
+  // ===============================================================
+  // Stack manipulation functions -- single registers/values.
+
   void Push(const Operand op) DEFINED_ON(x86_shared);
   void Push(Register reg) PER_SHARED_ARCH;
   void Push(Register reg1, Register reg2, Register reg3, Register reg4)
@@ -437,7 +472,7 @@ class MacroAssembler : public MacroAssemblerSpecific {
   void Push(FloatRegister reg) PER_SHARED_ARCH;
   void PushBoxed(FloatRegister reg) PER_ARCH;
   void PushFlags() DEFINED_ON(x86_shared);
-  void Push(jsid id, Register scratchReg);
+  void Push(PropertyKey key, Register scratchReg);
   void Push(const Address& addr);
   void Push(TypedOrValueRegister v);
   void Push(const ConstantOrRegister& v);
@@ -856,6 +891,8 @@ class MacroAssembler : public MacroAssemblerSpecific {
                  const ValueOperand& dest) PER_ARCH;
   void moveValue(const ValueOperand& src, const ValueOperand& dest) PER_ARCH;
   void moveValue(const Value& src, const ValueOperand& dest) PER_ARCH;
+
+  void movePropertyKey(PropertyKey key, Register dest);
 
   // ===============================================================
   // Load instructions
@@ -1289,7 +1326,7 @@ class MacroAssembler : public MacroAssemblerSpecific {
       DEFINED_ON(arm, arm64, mips_shared, x86, x64);
 
   inline void branch32(Condition cond, const BaseIndex& lhs, Register rhs,
-                       Label* label) DEFINED_ON(x86_shared);
+                       Label* label) DEFINED_ON(arm, x86_shared);
   inline void branch32(Condition cond, const BaseIndex& lhs, Imm32 rhs,
                        Label* label) PER_SHARED_ARCH;
 
@@ -1343,6 +1380,8 @@ class MacroAssembler : public MacroAssemblerSpecific {
                         Label* label) PER_SHARED_ARCH;
 
   inline void branchPtr(Condition cond, const BaseIndex& lhs, ImmWord rhs,
+                        Label* label) PER_SHARED_ARCH;
+  inline void branchPtr(Condition cond, const BaseIndex& lhs, Register rhs,
                         Label* label) PER_SHARED_ARCH;
 
   inline void branchPtr(Condition cond, const AbsoluteAddress& lhs,
@@ -1732,6 +1771,9 @@ class MacroAssembler : public MacroAssemblerSpecific {
 
   void branchTestValue(Condition cond, const ValueOperand& lhs,
                        const Value& rhs, Label* label) PER_ARCH;
+
+  inline void branchTestValue(Condition cond, const BaseIndex& lhs,
+                              const ValueOperand& rhs, Label* label) PER_ARCH;
 
   // Checks if given Value is evaluated to true or false in a condition.
   // The type of the value should match the type of the method.
@@ -2892,11 +2934,6 @@ class MacroAssembler : public MacroAssemblerSpecific {
                              FloatRegister rhs, FloatRegister dest)
       DEFINED_ON(arm64);
 
-  inline void unsignedCompareInt8x16(Assembler::Condition cond,
-                                     FloatRegister rhs, FloatRegister lhsDest,
-                                     FloatRegister temp1, FloatRegister temp2)
-      DEFINED_ON(x86_shared);
-
   inline void compareInt16x8(Assembler::Condition cond, FloatRegister rhs,
                              FloatRegister lhsDest)
       DEFINED_ON(x86_shared, arm64);
@@ -2908,11 +2945,6 @@ class MacroAssembler : public MacroAssemblerSpecific {
   // On x86_shared, limited to !=, ==, <=, >
   inline void compareInt16x8(Assembler::Condition cond, const SimdConstant& rhs,
                              FloatRegister lhsDest) DEFINED_ON(x86_shared);
-
-  inline void unsignedCompareInt16x8(Assembler::Condition cond,
-                                     FloatRegister rhs, FloatRegister lhsDest,
-                                     FloatRegister temp1, FloatRegister temp2)
-      DEFINED_ON(x86_shared);
 
   // On x86_shared, limited to !=, ==, <=, >
   inline void compareInt32x4(Assembler::Condition cond, FloatRegister rhs,
@@ -2926,11 +2958,6 @@ class MacroAssembler : public MacroAssemblerSpecific {
   inline void compareInt32x4(Assembler::Condition cond, FloatRegister lhs,
                              FloatRegister rhs, FloatRegister dest)
       DEFINED_ON(arm64);
-
-  inline void unsignedCompareInt32x4(Assembler::Condition cond,
-                                     FloatRegister rhs, FloatRegister lhsDest,
-                                     FloatRegister temp1, FloatRegister temp2)
-      DEFINED_ON(x86_shared);
 
   inline void compareForEqualityInt64x2(Assembler::Condition cond,
                                         FloatRegister rhs,
@@ -4628,6 +4655,17 @@ class MacroAssembler : public MacroAssemblerSpecific {
                       const TemplateObject& templateObj,
                       gc::InitialHeap initialHeap, Label* fail,
                       bool initContents = true);
+
+  void createPlainGCObject(Register result, Register shape, Register temp,
+                           Register temp2, uint32_t numFixedSlots,
+                           uint32_t numDynamicSlots, gc::AllocKind allocKind,
+                           gc::InitialHeap initialHeap, Label* fail);
+
+  void createArrayWithFixedElements(Register result, Register shape,
+                                    Register temp, uint32_t arrayLength,
+                                    uint32_t arrayCapacity,
+                                    gc::AllocKind allocKind,
+                                    gc::InitialHeap initialHeap, Label* fail);
 
   void initGCThing(Register obj, Register temp,
                    const TemplateObject& templateObj, bool initContents = true);

@@ -58,6 +58,7 @@ typedef XID GLXPbuffer;
 #  define GLX_RED_SIZE 8
 #  define GLX_GREEN_SIZE 9
 #  define GLX_BLUE_SIZE 10
+#  define GLX_DOUBLEBUFFER 5
 #endif
 
 // stuff from gl.h
@@ -535,6 +536,7 @@ static bool get_gles_status(EGLDisplay dpy,
         } else {
           record_warning("Can't find render node name for DRM device");
         }
+        free(renderDeviceName);
 #endif
       }
     }
@@ -717,8 +719,14 @@ static void get_glx_status(int* gotGlxInfo, int* gotDriDriver) {
                    1,        GLX_BLUE_SIZE, 1, None};
   XVisualInfo* vInfo = glXChooseVisual(dpy, DefaultScreen(dpy), attribs);
   if (!vInfo) {
-    record_error("No visuals found");
-    return;
+    int attribs2[] = {GLX_RGBA, GLX_RED_SIZE,  1, GLX_GREEN_SIZE,
+                      1,        GLX_BLUE_SIZE, 1, GLX_DOUBLEBUFFER,
+                      None};
+    vInfo = glXChooseVisual(dpy, DefaultScreen(dpy), attribs2);
+    if (!vInfo) {
+      record_error("No visuals found");
+      return;
+    }
   }
 
   // using a X11 Window instead of a GLXPixmap does not crash

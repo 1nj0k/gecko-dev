@@ -619,6 +619,7 @@ class ClassBodyScope : public Scope {
   friend class AbstractBindingIter<JSAtom>;
   friend class GCMarker;
   friend class frontend::ScopeStencil;
+  friend class AbstractScopePtr;
 
   static const ScopeKind classScopeKind_ = ScopeKind::ClassBody;
 
@@ -633,7 +634,6 @@ class ClassBodyScope : public Scope {
     //     synthetic - [0, privateMethodStart)
     // privateMethod - [privateMethodStart, length)
     uint32_t privateMethodStart = 0;
-    uint32_t length = 0;
   };
 
   using RuntimeData = RuntimeScopeData<SlotInfo>;

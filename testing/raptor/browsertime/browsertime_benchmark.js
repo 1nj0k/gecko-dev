@@ -50,16 +50,26 @@ module.exports = async function(context, commands) {
       (await commands.js.run(`return performance.now();`)) - starttime >=
         page_timeout
     ) {
+      ret = false;
       context.log.error("Benchmark timed out. Aborting...");
     } else if (data) {
+      // Reset benchmark results
+      await commands.js.run(
+        "return window.sessionStorage.removeItem('benchmark_results');"
+      );
+
       context.log.info("Value of benchmark data: ", data);
       data = JSON.parse(data);
 
-      commands.measure.addObject({
-        browsertime_benchmark: {
-          [data[1]]: data.slice(2),
-        },
-      });
+      if (!Array.isArray(data)) {
+        commands.measure.addObject({ browsertime_benchmark: data });
+      } else {
+        commands.measure.addObject({
+          browsertime_benchmark: {
+            [data[1]]: data.slice(2),
+          },
+        });
+      }
       ret = true;
     }
   }

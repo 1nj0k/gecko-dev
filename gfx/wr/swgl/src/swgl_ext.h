@@ -157,27 +157,29 @@ static ALWAYS_INLINE bool matchTextureFormat(S s, UNUSED uint8_t* buf) {
 
 // Quantizes the UVs to the 2^7 scale needed for calculating fractional offsets
 // for linear sampling.
-#define LINEAR_QUANTIZE_UV(sampler, uv, uv_step, uv_rect, min_uv, max_uv)   \
-  uv = swgl_linearQuantize(sampler, uv);                                    \
-  vec2_scalar uv_step =                                                     \
-      float(swgl_StepSize) * vec2_scalar{uv.x.y - uv.x.x, uv.y.y - uv.y.x}; \
-  vec2_scalar min_uv =                                                      \
-      swgl_linearQuantize(sampler, vec2_scalar{uv_rect.x, uv_rect.y});      \
-  vec2_scalar max_uv =                                                      \
-      swgl_linearQuantize(sampler, vec2_scalar{uv_rect.z, uv_rect.w});
+#define LINEAR_QUANTIZE_UV(sampler, uv, uv_step, uv_rect, min_uv, max_uv)     \
+  uv = swgl_linearQuantize(sampler, uv);                                      \
+  vec2_scalar uv_step =                                                       \
+      float(swgl_StepSize) * vec2_scalar{uv.x.y - uv.x.x, uv.y.y - uv.y.x};   \
+  vec2_scalar min_uv = max(                                                   \
+      swgl_linearQuantize(sampler, vec2_scalar{uv_rect.x, uv_rect.y}), 0.0f); \
+  vec2_scalar max_uv =                                                        \
+      max(swgl_linearQuantize(sampler, vec2_scalar{uv_rect.z, uv_rect.w}),    \
+          min_uv);
 
 // Implements the fallback linear filter that can deal with clamping and
 // arbitrary scales.
 template <bool BLEND, typename S, typename C, typename P>
-static void blendTextureLinearFallback(S sampler, vec2 uv, int span,
-                                       vec2_scalar uv_step, vec2_scalar min_uv,
-                                       vec2_scalar max_uv, C color, P* buf) {
+static P* blendTextureLinearFallback(S sampler, vec2 uv, int span,
+                                     vec2_scalar uv_step, vec2_scalar min_uv,
+                                     vec2_scalar max_uv, C color, P* buf) {
   for (P* end = buf + span; buf < end; buf += swgl_StepSize, uv += uv_step) {
     commit_blend_span<BLEND>(
         buf, applyColor(textureLinearUnpacked(buf, sampler,
                                               ivec2(clamp(uv, min_uv, max_uv))),
                         color));
   }
+  return buf;
 }
 
 static ALWAYS_INLINE U64 castForShuffle(V16<int16_t> r) {
@@ -386,13 +388,10 @@ enum LinearFilter {
 
 // Dispatches to an appropriate linear filter depending on the selected filter.
 template <bool BLEND, typename S, typename C, typename P>
-static int blendTextureLinear(S sampler, vec2 uv, int span,
-                              const vec4_scalar& uv_rect, C color, P* buf,
-                              LinearFilter filter) {
-  if (!matchTextureFormat(sampler, buf)) {
-    return 0;
-  }
-  LINEAR_QUANTIZE_UV(sampler, uv, uv_step, uv_rect, min_uv, max_uv);
+static P* blendTextureLinearDispatch(S sampler, vec2 uv, int span,
+                                     vec2_scalar uv_step, vec2_scalar min_uv,
+                                     vec2_scalar max_uv, C color, P* buf,
+                                     LinearFilter filter) {
   P* end = buf + span;
   if (filter != LINEAR_FILTER_FALLBACK) {
     // If we're not using the fallback, then Y is constant across the entire
@@ -402,29 +401,35 @@ static int blendTextureLinear(S sampler, vec2 uv, int span,
     if (beforeDist > 0) {
       int before = clamp(int(ceil(beforeDist / uv_step.x)) * swgl_StepSize, 0,
                          int(end - buf));
-      blendTextureLinearFallback<BLEND>(sampler, uv, before, uv_step, min_uv,
-                                        max_uv, color, buf);
-      buf += before;
+      buf = blendTextureLinearFallback<BLEND>(sampler, uv, before, uv_step,
+                                              min_uv, max_uv, color, buf);
       uv.x += (before / swgl_StepSize) * uv_step.x;
     }
     // We need to check how many samples we can take from inside the row without
     // requiring clamping. In case the filter oversamples the row by a step, we
     // subtract off a step from the width to leave some room.
     float insideDist =
-        min(max_uv.x, float((int(sampler->width) - swgl_StepSize) << 7)) -
+        min(max_uv.x, float((int(sampler->width) - swgl_StepSize) *
+                            swgl_LinearQuantizeScale)) -
         uv.x.x;
     if (uv_step.x > 0.0f && insideDist >= uv_step.x) {
-      int inside =
-          clamp(int(insideDist / uv_step.x) * swgl_StepSize, 0, int(end - buf));
-      if (filter == LINEAR_FILTER_FAST) {
-        blendTextureLinearFast<BLEND>(sampler, uv, inside, min_uv, max_uv,
-                                      color, buf);
-      } else if (filter == LINEAR_FILTER_DOWNSCALE) {
+      int inside = int(end - buf);
+      if (filter == LINEAR_FILTER_DOWNSCALE) {
+        inside = clamp(int(insideDist * (0.5f / swgl_LinearQuantizeScale)) &
+                           ~(swgl_StepSize - 1),
+                       0, inside);
         blendTextureLinearDownscale<BLEND>(sampler, uv, inside, min_uv, max_uv,
                                            color, buf);
-      } else {
+      } else if (filter == LINEAR_FILTER_UPSCALE) {
+        inside = clamp(int(insideDist / uv_step.x) * swgl_StepSize, 0, inside);
         blendTextureLinearUpscale<BLEND>(sampler, uv, inside, uv_step, min_uv,
                                          max_uv, color, buf);
+      } else {
+        inside = clamp(int(insideDist * (1.0f / swgl_LinearQuantizeScale)) &
+                           ~(swgl_StepSize - 1),
+                       0, inside);
+        blendTextureLinearFast<BLEND>(sampler, uv, inside, min_uv, max_uv,
+                                      color, buf);
       }
       buf += inside;
       uv.x += (inside / swgl_StepSize) * uv_step.x;
@@ -433,9 +438,23 @@ static int blendTextureLinear(S sampler, vec2 uv, int span,
   // If the fallback filter was requested, or if there are any samples left that
   // may be outside the row and require clamping, then handle that with here.
   if (buf < end) {
-    blendTextureLinearFallback<BLEND>(sampler, uv, int(end - buf), uv_step,
-                                      min_uv, max_uv, color, buf);
+    buf = blendTextureLinearFallback<BLEND>(
+        sampler, uv, int(end - buf), uv_step, min_uv, max_uv, color, buf);
   }
+  return buf;
+}
+
+// Helper function to quantize UVs for linear filtering before dispatch
+template <bool BLEND, typename S, typename C, typename P>
+static inline int blendTextureLinear(S sampler, vec2 uv, int span,
+                                     const vec4_scalar& uv_rect, C color,
+                                     P* buf, LinearFilter filter) {
+  if (!matchTextureFormat(sampler, buf)) {
+    return 0;
+  }
+  LINEAR_QUANTIZE_UV(sampler, uv, uv_step, uv_rect, min_uv, max_uv);
+  blendTextureLinearDispatch<BLEND>(sampler, uv, span, uv_step, min_uv, max_uv,
+                                    color, buf, filter);
   return span;
 }
 
@@ -462,8 +481,9 @@ static int blendTextureNearestFast(S sampler, vec2 uv, int span,
   // Calculate the row pointer within the buffer, clamping to within valid row
   // bounds.
   P* row =
-      &sampler->buf[clamp(clampCoord(i.y, sampler->height), minUV.y, maxUV.y) *
-                    sampler->stride];
+      &((P*)sampler
+            ->buf)[clamp(clampCoord(i.y, sampler->height), minUV.y, maxUV.y) *
+                   sampler->stride];
   // Find clamped X bounds within the row.
   int minX = clamp(minUV.x, 0, sampler->width - 1);
   int maxX = clamp(maxUV.x, minX, sampler->width - 1);
@@ -499,7 +519,8 @@ static int blendTextureNearestFast(S sampler, vec2 uv, int span,
   // If we still have samples left above the valid sample bounds, then we again
   // need to fill this section with a constant clamped sample.
   if (curX < endX) {
-    auto src = applyColor(unpack(bit_cast<packed_type>(U32(row[maxX]))), color);
+    auto src =
+        applyColor(unpack(bit_cast<packed_type>(V4<P>(row[maxX]))), color);
     commit_solid_span<BLEND>(buf, src, endX - curX);
   }
   return span;
@@ -586,31 +607,83 @@ static inline LinearFilter needsTextureLinear(S sampler, T P, int span) {
 #define swgl_commitTextureLinearColorR8(s, p, uv_rect, color) \
   swgl_commitTextureLinear(R8, s, p, uv_rect, color)
 
+// Compute repeating UVs, possibly constrained by tile repeat limits
+static inline vec2 tileRepeatUV(vec2 uv, const vec2_scalar& tile_repeat) {
+  if (tile_repeat.x > 0.0f) {
+    // Clamp to a number slightly less than the tile repeat limit so that
+    // it results in a number close to but not equal to 1 after fract().
+    // This avoids fract() yielding 0 if the limit was left as whole integer.
+    uv = clamp(uv, vec2_scalar(0.0f), tile_repeat - 1.0e-6f);
+  }
+  return fract(uv);
+}
+
+// Compute the number of non-repeating steps before we need to potentially
+// repeat the UVs.
+static inline int computeNoRepeatSteps(Float uv, float uv_step,
+                                       float tile_repeat, int steps) {
+  if (uv.w < uv.x) {
+    // Ensure the UV taps are ordered low to high.
+    uv = uv.wzyx;
+  }
+  // Check if the samples cross the boundary of the next whole integer or the
+  // tile repeat limit, whichever is lower.
+  float limit = floor(uv.x) + 1.0f;
+  if (tile_repeat > 0.0f) {
+    limit = min(limit, tile_repeat);
+  }
+  return uv.x >= 0.0f && uv.w < limit
+             ? (uv_step != 0.0f
+                    ? int(min(float(steps), (limit - uv.x) / uv_step))
+                    : steps)
+             : 0;
+}
+
 // Blends an entire span of texture with linear filtering and repeating UVs.
 template <bool BLEND, typename S, typename C, typename P>
 static int blendTextureLinearRepeat(S sampler, vec2 uv, int span,
+                                    const vec2_scalar& tile_repeat,
                                     const vec4_scalar& uv_repeat,
                                     const vec4_scalar& uv_rect, C color,
                                     P* buf) {
   if (!matchTextureFormat(sampler, buf)) {
     return 0;
   }
+  vec2_scalar uv_scale = {uv_repeat.z - uv_repeat.x, uv_repeat.w - uv_repeat.y};
+  vec2_scalar uv_offset = {uv_repeat.x, uv_repeat.y};
+  // Choose a linear filter to use for no-repeat sub-spans
+  LinearFilter filter =
+      needsTextureLinear(sampler, uv * uv_scale + uv_offset, span);
   // We need to step UVs unscaled and unquantized so that we can modulo them
   // with fract. We use uv_scale and uv_offset to map them into the correct
   // range.
   vec2_scalar uv_step =
       float(swgl_StepSize) * vec2_scalar{uv.x.y - uv.x.x, uv.y.y - uv.y.x};
-  vec2_scalar uv_scale = swgl_linearQuantizeStep(
-      sampler,
-      vec2_scalar{uv_repeat.z - uv_repeat.x, uv_repeat.w - uv_repeat.y});
-  vec2_scalar uv_offset =
-      swgl_linearQuantize(sampler, vec2_scalar{uv_repeat.x, uv_repeat.y});
-  vec2_scalar min_uv =
-      swgl_linearQuantize(sampler, vec2_scalar{uv_rect.x, uv_rect.y});
-  vec2_scalar max_uv =
-      swgl_linearQuantize(sampler, vec2_scalar{uv_rect.z, uv_rect.w});
+  uv_scale = swgl_linearQuantizeStep(sampler, uv_scale);
+  uv_offset = swgl_linearQuantize(sampler, uv_offset);
+  vec2_scalar min_uv = max(
+      swgl_linearQuantize(sampler, vec2_scalar{uv_rect.x, uv_rect.y}), 0.0f);
+  vec2_scalar max_uv = max(
+      swgl_linearQuantize(sampler, vec2_scalar{uv_rect.z, uv_rect.w}), min_uv);
   for (P* end = buf + span; buf < end; buf += swgl_StepSize, uv += uv_step) {
-    vec2 repeated_uv = clamp(fract(uv) * uv_scale + uv_offset, min_uv, max_uv);
+    int steps = int(end - buf) / swgl_StepSize;
+    // Find the sub-span before UVs repeat to avoid expensive repeat math
+    steps = computeNoRepeatSteps(uv.x, uv_step.x, tile_repeat.x, steps);
+    if (steps > 0) {
+      steps = computeNoRepeatSteps(uv.y, uv_step.y, tile_repeat.y, steps);
+      if (steps > 0) {
+        buf = blendTextureLinearDispatch<BLEND>(
+            sampler, fract(uv) * uv_scale + uv_offset, steps * swgl_StepSize,
+            uv_step * uv_scale, min_uv, max_uv, color, buf, filter);
+        if (buf >= end) {
+          break;
+        }
+        uv += steps * uv_step;
+      }
+    }
+    // UVs might repeat within this step, so explicitly compute repeated UVs
+    vec2 repeated_uv = clamp(
+        tileRepeatUV(uv, tile_repeat) * uv_scale + uv_offset, min_uv, max_uv);
     commit_blend_span<BLEND>(
         buf, applyColor(textureLinearUnpacked(buf, sampler, ivec2(repeated_uv)),
                         color));
@@ -619,28 +692,31 @@ static int blendTextureLinearRepeat(S sampler, vec2 uv, int span,
 }
 
 // Commit an entire span with linear filtering and repeating UVs
-#define swgl_commitTextureLinearRepeat(format, s, p, uv_repeat, uv_rect,       \
-                                       color)                                  \
+#define swgl_commitTextureLinearRepeat(format, s, p, tile_repeat, uv_repeat,   \
+                                       uv_rect, color)                         \
   do {                                                                         \
     auto packed_color = packColor(swgl_Out##format, color);                    \
     int drawn = 0;                                                             \
     if (blend_key) {                                                           \
-      drawn = blendTextureLinearRepeat<true>(s, p, swgl_SpanLength, uv_repeat, \
-                                             uv_rect, packed_color,            \
-                                             swgl_Out##format);                \
+      drawn = blendTextureLinearRepeat<true>(s, p, swgl_SpanLength,            \
+                                             tile_repeat, uv_repeat, uv_rect,  \
+                                             packed_color, swgl_Out##format);  \
     } else {                                                                   \
       drawn = blendTextureLinearRepeat<false>(s, p, swgl_SpanLength,           \
-                                              uv_repeat, uv_rect,              \
+                                              tile_repeat, uv_repeat, uv_rect, \
                                               packed_color, swgl_Out##format); \
     }                                                                          \
     swgl_Out##format += drawn;                                                 \
     swgl_SpanLength -= drawn;                                                  \
   } while (0)
-#define swgl_commitTextureLinearRepeatRGBA8(s, p, uv_repeat, uv_rect) \
-  swgl_commitTextureLinearRepeat(RGBA8, s, p, uv_repeat, uv_rect, NoColor())
-#define swgl_commitTextureLinearRepeatColorRGBA8(s, p, uv_repeat, uv_rect, \
-                                                 color)                    \
-  swgl_commitTextureLinearRepeat(RGBA8, s, p, uv_repeat, uv_rect, color)
+#define swgl_commitTextureLinearRepeatRGBA8(s, p, tile_repeat, uv_repeat,      \
+                                            uv_rect)                           \
+  swgl_commitTextureLinearRepeat(RGBA8, s, p, tile_repeat, uv_repeat, uv_rect, \
+                                 NoColor())
+#define swgl_commitTextureLinearRepeatColorRGBA8(s, p, tile_repeat, uv_repeat, \
+                                                 uv_rect, color)               \
+  swgl_commitTextureLinearRepeat(RGBA8, s, p, tile_repeat, uv_repeat, uv_rect, \
+                                 color)
 
 template <typename S>
 static ALWAYS_INLINE PackedRGBA8 textureNearestPacked(UNUSED uint32_t* buf,
@@ -652,6 +728,7 @@ static ALWAYS_INLINE PackedRGBA8 textureNearestPacked(UNUSED uint32_t* buf,
 // repeated or clamped UVs.
 template <bool BLEND, bool REPEAT, typename S, typename C, typename P>
 static int blendTextureNearestRepeat(S sampler, vec2 uv, int span,
+                                     const vec2_scalar& tile_repeat,
                                      const vec4_scalar& uv_rect, C color,
                                      P* buf) {
   if (!matchTextureFormat(sampler, buf)) {
@@ -677,8 +754,9 @@ static int blendTextureNearestRepeat(S sampler, vec2 uv, int span,
        (uv_step.x * span * (REPEAT ? uv_scale.x : 1.0f) < 0.5f)) &&
       (int(min_uv.y) + (REPEAT ? 1 : 0) >= int(max_uv.y) ||
        (uv_step.y * span * (REPEAT ? uv_scale.y : 1.0f) < 0.5f))) {
-    vec2 repeated_uv =
-        REPEAT ? fract(uv) * uv_scale + min_uv : clamp(uv, min_uv, max_uv);
+    vec2 repeated_uv = REPEAT
+                           ? tileRepeatUV(uv, tile_repeat) * uv_scale + min_uv
+                           : clamp(uv, min_uv, max_uv);
     commit_solid_span<BLEND>(buf,
                              applyColor(unpack(textureNearestPacked(
                                             buf, sampler, ivec2(repeated_uv))),
@@ -686,8 +764,34 @@ static int blendTextureNearestRepeat(S sampler, vec2 uv, int span,
                              span);
   } else {
     for (P* end = buf + span; buf < end; buf += swgl_StepSize, uv += uv_step) {
-      vec2 repeated_uv =
-          REPEAT ? fract(uv) * uv_scale + min_uv : clamp(uv, min_uv, max_uv);
+      if (REPEAT) {
+        int steps = int(end - buf) / swgl_StepSize;
+        // Find the sub-span before UVs repeat to avoid expensive repeat math
+        steps = computeNoRepeatSteps(uv.x, uv_step.x, tile_repeat.x, steps);
+        if (steps > 0) {
+          steps = computeNoRepeatSteps(uv.y, uv_step.y, tile_repeat.y, steps);
+          if (steps > 0) {
+            vec2 inside_uv = fract(uv) * uv_scale + min_uv;
+            vec2 inside_step = uv_step * uv_scale;
+            for (P* outside = &buf[steps * swgl_StepSize]; buf < outside;
+                 buf += swgl_StepSize, inside_uv += inside_step) {
+              commit_blend_span<BLEND>(
+                  buf, applyColor(
+                           textureNearestPacked(buf, sampler, ivec2(inside_uv)),
+                           color));
+            }
+            if (buf >= end) {
+              break;
+            }
+            uv += steps * uv_step;
+          }
+        }
+      }
+
+      // UVs might repeat within this step, so explicitly compute repeated UVs
+      vec2 repeated_uv = REPEAT
+                             ? tileRepeatUV(uv, tile_repeat) * uv_scale + min_uv
+                             : clamp(uv, min_uv, max_uv);
       commit_blend_span<BLEND>(
           buf,
           applyColor(textureNearestPacked(buf, sampler, ivec2(repeated_uv)),
@@ -709,17 +813,19 @@ static ALWAYS_INLINE bool needsNearestFallback(S sampler, T P, int span) {
 
 // Commit an entire span with nearest filtering and either clamped or repeating
 // UVs
-#define swgl_commitTextureNearest(format, repeat, s, p, uv_rect, color)       \
+#define swgl_commitTextureNearest(format, s, p, uv_rect, color)               \
   do {                                                                        \
     auto packed_color = packColor(swgl_Out##format, color);                   \
     int drawn = 0;                                                            \
-    if (repeat || needsNearestFallback(s, p, swgl_SpanLength)) {              \
+    if (needsNearestFallback(s, p, swgl_SpanLength)) {                        \
       if (blend_key) {                                                        \
-        drawn = blendTextureNearestRepeat<true, repeat>(                      \
-            s, p, swgl_SpanLength, uv_rect, packed_color, swgl_Out##format);  \
+        drawn = blendTextureNearestRepeat<true, false>(                       \
+            s, p, swgl_SpanLength, 0.0f, uv_rect, packed_color,               \
+            swgl_Out##format);                                                \
       } else {                                                                \
-        drawn = blendTextureNearestRepeat<false, repeat>(                     \
-            s, p, swgl_SpanLength, uv_rect, packed_color, swgl_Out##format);  \
+        drawn = blendTextureNearestRepeat<false, false>(                      \
+            s, p, swgl_SpanLength, 0.0f, uv_rect, packed_color,               \
+            swgl_Out##format);                                                \
       }                                                                       \
     } else if (blend_key) {                                                   \
       drawn = blendTextureNearestFast<true>(s, p, swgl_SpanLength, uv_rect,   \
@@ -732,14 +838,34 @@ static ALWAYS_INLINE bool needsNearestFallback(S sampler, T P, int span) {
     swgl_SpanLength -= drawn;                                                 \
   } while (0)
 #define swgl_commitTextureNearestRGBA8(s, p, uv_rect) \
-  swgl_commitTextureNearest(RGBA8, false, s, p, uv_rect, NoColor())
+  swgl_commitTextureNearest(RGBA8, s, p, uv_rect, NoColor())
 #define swgl_commitTextureNearestColorRGBA8(s, p, uv_rect, color) \
-  swgl_commitTextureNearest(RGBA8, false, s, p, uv_rect, color)
-#define swgl_commitTextureNearestRepeatRGBA8(s, p, uv_repeat, uv_rect) \
-  swgl_commitTextureNearest(RGBA8, true, s, p, uv_repeat, NoColor())
-#define swgl_commitTextureNearestRepeatColorRGBA8(s, p, uv_repeat, uv_rect, \
-                                                  color)                    \
-  swgl_commitTextureNearest(RGBA8, true, s, p, uv_repeat, color)
+  swgl_commitTextureNearest(RGBA8, s, p, uv_rect, color)
+
+#define swgl_commitTextureNearestRepeat(format, s, p, tile_repeat, uv_rect, \
+                                        color)                              \
+  do {                                                                      \
+    auto packed_color = packColor(swgl_Out##format, color);                 \
+    int drawn = 0;                                                          \
+    if (blend_key) {                                                        \
+      drawn = blendTextureNearestRepeat<true, true>(                        \
+          s, p, swgl_SpanLength, tile_repeat, uv_rect, packed_color,        \
+          swgl_Out##format);                                                \
+    } else {                                                                \
+      drawn = blendTextureNearestRepeat<false, true>(                       \
+          s, p, swgl_SpanLength, tile_repeat, uv_rect, packed_color,        \
+          swgl_Out##format);                                                \
+    }                                                                       \
+    swgl_Out##format += drawn;                                              \
+    swgl_SpanLength -= drawn;                                               \
+  } while (0)
+#define swgl_commitTextureNearestRepeatRGBA8(s, p, tile_repeat, uv_repeat, \
+                                             uv_rect)                      \
+  swgl_commitTextureNearestRepeat(RGBA8, s, p, tile_repeat, uv_repeat,     \
+                                  NoColor())
+#define swgl_commitTextureNearestRepeatColorRGBA8(s, p, tile_repeat,         \
+                                                  uv_repeat, uv_rect, color) \
+  swgl_commitTextureNearestRepeat(RGBA8, s, p, tile_repeat, uv_repeat, color)
 
 // Commit an entire span of texture with filtering determined by sampler state.
 #define swgl_commitTexture(format, s, ...)               \

@@ -102,6 +102,9 @@ const CustomizableWidgets = [
         case "ViewShowing":
           this.onSubViewShowing(event);
           break;
+        case "unload":
+          this.onWindowUnload(event);
+          break;
         default:
           throw new Error(`Unsupported event for '${this.id}'`);
       }
@@ -166,6 +169,7 @@ const CustomizableWidgets = [
       // When the popup is hidden (thus the panelmultiview node as well), make
       // sure to stop listening to PlacesDatabase updates.
       panelview.panelMultiView.addEventListener("PanelMultiViewHidden", this);
+      window.addEventListener("unload", this);
     },
     onViewHiding(event) {
       log.debug("History view is being hidden!");
@@ -186,6 +190,11 @@ const CustomizableWidgets = [
         ).removeEventListener("ViewShowing", this);
       }
       panelMultiView.removeEventListener("PanelMultiViewHidden", this);
+    },
+    onWindowUnload(event) {
+      if (this._panelMenuView) {
+        delete this._panelMenuView;
+      }
     },
     onSubViewShowing(event) {
       let panelview = event.target;
@@ -282,7 +291,7 @@ const CustomizableWidgets = [
   {
     id: "add-ons-button",
     shortcutId: "key_openAddons",
-    tooltiptext: "add-ons-button.tooltiptext3",
+    l10nId: "toolbar-addons-themes-button",
     onCommand(aEvent) {
       let win = aEvent.target.ownerGlobal;
       win.BrowserOpenAddonsMgr();
@@ -669,26 +678,25 @@ if (!screenshotsDisabled) {
       Services.obs.addObserver(this, "toggle-screenshot-disable");
     },
     observe(subj, topic, data) {
-      this.screenshotNode.setAttribute("disabled", data);
+      if (data == "true") {
+        this.screenshotNode.setAttribute("disabled", "true");
+      } else {
+        this.screenshotNode.removeAttribute("disabled");
+      }
     },
   });
 }
 
 let preferencesButton = {
   id: "preferences-button",
+  l10nId: "toolbar-settings-button",
   onCommand(aEvent) {
     let win = aEvent.target.ownerGlobal;
     win.openPreferences(undefined);
   },
 };
-if (AppConstants.platform == "win") {
-  preferencesButton.label = "preferences-button.labelWin";
-  preferencesButton.tooltiptext = "preferences-button.tooltipWin2";
-} else if (AppConstants.platform == "macosx") {
-  preferencesButton.tooltiptext = "preferences-button.tooltiptext.withshortcut";
+if (AppConstants.platform == "macosx") {
   preferencesButton.shortcutId = "key_preferencesCmdMac";
-} else {
-  preferencesButton.tooltiptext = "preferences-button.tooltiptext2";
 }
 CustomizableWidgets.push(preferencesButton);
 

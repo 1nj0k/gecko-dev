@@ -587,8 +587,9 @@ void gfxShapedText::SetupClusterBoundaries(uint32_t aOffset,
     }
   }
 
+  const char16_t kIdeographicSpace = 0x3000;
   while (!iter.AtEnd()) {
-    if (*iter == char16_t(' ')) {
+    if (*iter == char16_t(' ') || *iter == kIdeographicSpace) {
       glyphs->SetIsSpace();
     }
     // advance iter to the next cluster-start (or end of text)
@@ -796,7 +797,7 @@ gfxFont::gfxFont(const RefPtr<UnscaledFont>& aUnscaledFont,
     : mFontEntry(aFontEntry),
       mUnscaledFont(aUnscaledFont),
       mStyle(*aFontStyle),
-      mAdjustedSize(-1.0),  // negative to indicate "not yet initialized"
+      mAdjustedSize(-1.0),       // negative to indicate "not yet initialized"
       mFUnitsConvFactor(-1.0f),  // negative to indicate "not yet initialized"
       mAntialiasOption(anAAOption),
       mIsValid(true),

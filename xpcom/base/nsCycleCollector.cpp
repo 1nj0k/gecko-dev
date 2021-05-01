@@ -248,9 +248,8 @@ static void SuspectUsingNurseryPurpleBuffer(
 // MOZ_CC_LOG_ALL or MOZ_CC_LOG_SHUTDOWN for it to do anything.
 //
 // MOZ_CC_LOG_PROCESS: If set to "main", only automatically log main process
-// CCs. If set to "content", only automatically log tab CCs. If set to
-// "plugins", only automatically log plugin CCs. If set to "all", log
-// everything. The default value is "all". This must be used with either
+// CCs. If set to "content", only automatically log tab CCs. If set to "all",
+// log everything. The default value is "all". This must be used with either
 // MOZ_CC_LOG_ALL or MOZ_CC_LOG_SHUTDOWN for it to do anything.
 //
 // MOZ_CC_ALL_TRACES: If set to "all", any cycle collector
@@ -297,9 +296,6 @@ struct nsCycleCollectorParams {
       switch (XRE_GetProcessType()) {
         case GeckoProcessType_Default:
           processLogging = !strcmp(logProcessEnv, "main");
-          break;
-        case GeckoProcessType_Plugin:
-          processLogging = !strcmp(logProcessEnv, "plugins");
           break;
         case GeckoProcessType_Content:
           processLogging = !strcmp(logProcessEnv, "content");
@@ -2042,10 +2038,6 @@ void CCGraphBuilder::DoneAddingRoots() {
 }
 
 MOZ_NEVER_INLINE bool CCGraphBuilder::BuildGraph(SliceBudget& aBudget) {
-  const intptr_t kNumNodesBetweenTimeChecks = 1000;
-  const intptr_t kStep =
-      SliceBudget::StepsPerTimeCheck / kNumNodesBetweenTimeChecks;
-
   MOZ_ASSERT(mCurrNode);
 
   while (!aBudget.isOverBudget() && !mCurrNode->IsDone()) {
@@ -2072,7 +2064,7 @@ MOZ_NEVER_INLINE bool CCGraphBuilder::BuildGraph(SliceBudget& aBudget) {
       SetLastChild();
     }
 
-    aBudget.step(kStep * (mNoteChildCount + 1));
+    aBudget.step(mNoteChildCount + 1);
   }
 
   if (!mCurrNode->IsDone()) {
@@ -3450,8 +3442,7 @@ bool nsCycleCollector::Collect(ccType aCCType, SliceBudget& aBudget,
         break;
     }
     if (continueSlice) {
-      // Force SliceBudget::isOverBudget to check the time.
-      aBudget.step(SliceBudget::StepsPerTimeCheck);
+      aBudget.stepAndForceCheck();
       continueSlice = !aBudget.isOverBudget();
     }
   } while (continueSlice);

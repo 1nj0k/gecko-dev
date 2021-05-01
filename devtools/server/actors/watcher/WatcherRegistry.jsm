@@ -219,6 +219,7 @@ const WatcherRegistry = {
   unregisterWatcher(watcher) {
     watchedDataByWatcherActor.delete(watcher.actorID);
     watcherActors.delete(watcher.actorID);
+    this.maybeUnregisteringJSWindowActor();
   },
 
   /**
@@ -308,6 +309,8 @@ const JSWindowActorsConfig = {
         "resource://devtools/server/connectors/js-window-actor/DevToolsFrameChild.jsm",
       events: {
         DOMWindowCreated: {},
+        pageshow: {},
+        pagehide: {},
       },
     },
     allFrames: true,

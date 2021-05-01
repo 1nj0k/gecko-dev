@@ -15,7 +15,8 @@
 #include "js/OffThreadScriptCompilation.h"
 #include "js/Transcoding.h"
 #include "jsapi-tests/tests.h"
-#include "vm/Monitor.h"  // js::Monitor, js::AutoLockMonitor
+#include "vm/HelperThreadState.h"  // js::RunPendingSourceCompressions
+#include "vm/Monitor.h"            // js::Monitor, js::AutoLockMonitor
 
 BEGIN_TEST(testStencil_Basic) {
   const char* chars =
@@ -94,8 +95,9 @@ bool basic_test(const CharT* chars) {
   JS::RootedValue rval(cx);
   CHECK(JS::ModuleInstantiate(cx, moduleObject));
   CHECK(JS::ModuleEvaluate(cx, moduleObject, &rval));
-  CHECK(rval.isUndefined());
+  CHECK(!rval.isUndefined());
 
+  js::RunJobs(cx);
   CHECK(JS_GetProperty(cx, global, "x", &rval));
   CHECK(rval.isNumber() && rval.toNumber() == 42);
 
@@ -140,6 +142,12 @@ END_TEST(testStencil_NonSyntactic)
 
 BEGIN_TEST(testStencil_MultiGlobal) {
   const char* chars =
+      "/**************************************/"
+      "/**************************************/"
+      "/**************************************/"
+      "/**************************************/"
+      "/**************************************/"
+      "/**************************************/"
       "function f() { return 42; }"
       "f();";
 
@@ -154,6 +162,11 @@ BEGIN_TEST(testStencil_MultiGlobal) {
   CHECK(RunInNewGlobal(cx, stencil));
   CHECK(RunInNewGlobal(cx, stencil));
   CHECK(RunInNewGlobal(cx, stencil));
+
+  // Start any pending SourceCompressionTasks now to confirm nothing fell apart
+  // when using a JS::Stencil multiple times.
+  CHECK(strlen(chars) > js::ScriptSource::MinimumCompressibleLength);
+  js::RunPendingSourceCompressions(cx->runtime());
 
   return true;
 }
@@ -327,8 +340,9 @@ BEGIN_TEST(testStencil_OffThreadModule) {
   JS::RootedValue rval(cx);
   CHECK(JS::ModuleInstantiate(cx, moduleObject));
   CHECK(JS::ModuleEvaluate(cx, moduleObject, &rval));
-  CHECK(rval.isUndefined());
+  CHECK(!rval.isUndefined());
 
+  js::RunJobs(cx);
   CHECK(JS_GetProperty(cx, global, "x", &rval));
   CHECK(rval.isNumber() && rval.toNumber() == 42);
 

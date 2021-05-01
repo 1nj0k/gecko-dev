@@ -179,6 +179,7 @@ void MediaDecoder::NotifyOwnerActivityChanged(bool aIsOwnerInvisible,
 void MediaDecoder::Pause() {
   MOZ_ASSERT(NS_IsMainThread());
   MOZ_DIAGNOSTIC_ASSERT(!IsShutdown());
+  LOG("Pause");
   if (mPlayState == PLAY_STATE_LOADING || IsEnded()) {
     mNextState = PLAY_STATE_PAUSED;
     return;
@@ -274,6 +275,7 @@ MediaDecoder::MediaDecoder(MediaDecoderInit& aInit)
       INIT_CANONICAL(mVolume, aInit.mVolume),
       INIT_CANONICAL(mPreservesPitch, aInit.mPreservesPitch),
       INIT_CANONICAL(mLooping, aInit.mLooping),
+      INIT_CANONICAL(mStreamName, aInit.mStreamName),
       INIT_CANONICAL(mSinkDevice, nullptr),
       INIT_CANONICAL(mSecondaryVideoContainer, nullptr),
       INIT_CANONICAL(mOutputCaptureState, OutputCaptureState::None),
@@ -568,6 +570,7 @@ void MediaDecoder::Play() {
   MOZ_ASSERT(NS_IsMainThread());
 
   NS_ASSERTION(mDecoderStateMachine != nullptr, "Should have state machine.");
+  LOG("Play");
   if (mPlaybackRate == 0) {
     return;
   }
@@ -589,6 +592,7 @@ void MediaDecoder::Seek(double aTime, SeekTarget::Type aSeekType) {
 
   MOZ_ASSERT(aTime >= 0.0, "Cannot seek to a negative value.");
 
+  LOG("Seek");
   auto time = TimeUnit::FromSeconds(aTime);
 
   mLogicalPosition = aTime;
@@ -846,6 +850,8 @@ void MediaDecoder::ChangeState(PlayState aState) {
   if (mPlayState != aState) {
     DDLOG(DDLogCategory::Property, "play_state", ToPlayStateStr(aState));
   }
+  LOG("Play state changes from %s to %s", ToPlayStateStr(mPlayState),
+      ToPlayStateStr(aState));
   mPlayState = aState;
   UpdateTelemetryHelperBasedOnPlayState(aState);
 }
@@ -874,11 +880,12 @@ MediaDecoder::PositionUpdate MediaDecoder::GetPositionUpdateReason(
   // If current position is earlier than previous position and we didn't do
   // seek, that means we looped back to the start position, which currently
   // happens on audio only.
-  if (mLooping && !mSeekRequest.Exists() && aCurPos < aPrevPos) {
+  const bool notSeeking = !mSeekRequest.Exists();
+  if (mLooping && notSeeking && aCurPos < aPrevPos) {
     return PositionUpdate::eSeamlessLoopingSeeking;
   }
-  return aPrevPos != aCurPos ? PositionUpdate::ePeriodicUpdate
-                             : PositionUpdate::eOther;
+  return aPrevPos != aCurPos && notSeeking ? PositionUpdate::ePeriodicUpdate
+                                           : PositionUpdate::eOther;
 }
 
 void MediaDecoder::UpdateLogicalPositionInternal() {
@@ -1159,6 +1166,11 @@ void MediaDecoder::SetPreservesPitch(bool aPreservesPitch) {
 void MediaDecoder::SetLooping(bool aLooping) {
   MOZ_ASSERT(NS_IsMainThread());
   mLooping = aLooping;
+}
+
+void MediaDecoder::SetStreamName(const nsAutoString& aStreamName) {
+  MOZ_ASSERT(NS_IsMainThread());
+  mStreamName = aStreamName;
 }
 
 void MediaDecoder::ConnectMirrors(MediaDecoderStateMachine* aObject) {

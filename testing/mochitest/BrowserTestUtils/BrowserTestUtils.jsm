@@ -273,9 +273,10 @@ var BrowserTestUtils = {
       }
     }
     return Promise.all(promises).then(() => {
+      let { innerWindowId } = tabbrowser.ownerGlobal.windowGlobalChild;
       ChromeUtils.addProfilerMarker(
         "BrowserTestUtils",
-        { startTime, category: "Test" },
+        { startTime, category: "Test", innerWindowId },
         "openNewForegroundTab"
       );
       return tab;
@@ -364,6 +365,8 @@ var BrowserTestUtils = {
    */
   switchTab(tabbrowser, tab) {
     let startTime = Cu.now();
+    let { innerWindowId } = tabbrowser.ownerGlobal.windowGlobalChild;
+
     let promise = new Promise(resolve => {
       tabbrowser.addEventListener(
         "TabSwitchDone",
@@ -371,7 +374,7 @@ var BrowserTestUtils = {
           TestUtils.executeSoon(() => {
             ChromeUtils.addProfilerMarker(
               "BrowserTestUtils",
-              { category: "Test", startTime },
+              { category: "Test", startTime, innerWindowId },
               "switchTab"
             );
             resolve(tabbrowser.selectedTab);
@@ -425,6 +428,7 @@ var BrowserTestUtils = {
     maybeErrorPage = false
   ) {
     let startTime = Cu.now();
+    let { innerWindowId } = browser.ownerGlobal.windowGlobalChild;
 
     // Passing a url as second argument is a common mistake we should prevent.
     if (includeSubFrames && typeof includeSubFrames != "boolean") {
@@ -484,7 +488,7 @@ var BrowserTestUtils = {
 
             ChromeUtils.addProfilerMarker(
               "BrowserTestUtils",
-              { startTime, category: "Test" },
+              { startTime, category: "Test", innerWindowId },
               "browserLoaded: " + internalURL
             );
             resolve(internalURL);
@@ -1230,35 +1234,62 @@ var BrowserTestUtils = {
    */
   waitForEvent(subject, eventName, capture, checkFn, wantsUntrusted) {
     let startTime = Cu.now();
+    let innerWindowId = subject.ownerGlobal?.windowGlobalChild.innerWindowId;
+
     return new Promise((resolve, reject) => {
-      subject.addEventListener(
-        eventName,
-        function listener(event) {
-          try {
-            if (checkFn && !checkFn(event)) {
-              return;
-            }
-            subject.removeEventListener(eventName, listener, capture);
-            TestUtils.executeSoon(() => {
-              ChromeUtils.addProfilerMarker(
-                "BrowserTestUtils",
-                { startTime, category: "Test" },
-                "waitForEvent: " + eventName
-              );
-              resolve(event);
-            });
-          } catch (ex) {
-            try {
-              subject.removeEventListener(eventName, listener, capture);
-            } catch (ex2) {
-              // Maybe the provided object does not support removeEventListener.
-            }
-            TestUtils.executeSoon(() => reject(ex));
+      let removed = false;
+      function listener(event) {
+        function cleanup() {
+          removed = true;
+          // Avoid keeping references to objects after the promise resolves.
+          subject = null;
+          checkFn = null;
+        }
+        try {
+          if (checkFn && !checkFn(event)) {
+            return;
           }
-        },
-        capture,
-        wantsUntrusted
-      );
+          subject.removeEventListener(eventName, listener, capture);
+          cleanup();
+          TestUtils.executeSoon(() => {
+            ChromeUtils.addProfilerMarker(
+              "BrowserTestUtils",
+              { startTime, category: "Test", innerWindowId },
+              "waitForEvent: " + eventName
+            );
+            resolve(event);
+          });
+        } catch (ex) {
+          try {
+            subject.removeEventListener(eventName, listener, capture);
+          } catch (ex2) {
+            // Maybe the provided object does not support removeEventListener.
+          }
+          cleanup();
+          TestUtils.executeSoon(() => reject(ex));
+        }
+      }
+
+      subject.addEventListener(eventName, listener, capture, wantsUntrusted);
+
+      TestUtils.promiseTestFinished?.then(() => {
+        if (removed) {
+          return;
+        }
+
+        subject.removeEventListener(eventName, listener, capture);
+        let text = eventName + " listener";
+        if (subject.id) {
+          text += ` on #${subject.id}`;
+        }
+        text += " not removed before the end of test";
+        reject(text);
+        ChromeUtils.addProfilerMarker(
+          "BrowserTestUtils",
+          { startTime, category: "Test", innerWindowId },
+          "waitForEvent: " + text
+        );
+      });
     });
   },
 

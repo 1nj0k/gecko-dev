@@ -26,20 +26,20 @@
   }
 }
 
-@supports -moz-bool-pref("browser.proton.enabled") {
+@media (-moz-proton) {
 /* Add a fog for background tabs to be visible on Windows 7 glass window background */
 @media (-moz-os-version: windows-win7) {
   @media (-moz-windows-default-theme) {
     #TabsToolbar {
       background-image: radial-gradient(ellipse at bottom, rgba(255,255,255,0.8), rgba(255,255,255,0.5) 80%, transparent);
       color: black;
-      --lwt-toolbarbutton-icon-fill: currentColor;
+      --toolbarbutton-icon-fill: currentColor;
     }
   }
 }
 } /*** END proton ***/
 
-@supports not -moz-bool-pref("browser.proton.enabled") {
+@media not (-moz-proton) {
 @media (-moz-os-version: windows-win7) {
   @media (-moz-windows-default-theme) {
     /* Always show light toolbar elements on aero surface. */
@@ -47,7 +47,7 @@
       color: hsl(240,9%,98%);
     }
 
-    @supports not -moz-bool-pref("browser.proton.enabled") {
+    @media not (-moz-proton) {
     /* Because we're forcing the tabs toolbar to be [brighttext] to
      * get white toolbar button icons, we need to manually set the
      * correct color for the tab hover state for the light theme. */
@@ -60,10 +60,10 @@
 } /*** END !proton ***/
 
 @media (-moz-windows-glass) {
-  @supports not -moz-bool-pref("browser.proton.enabled") {
+  @media not (-moz-proton) {
   /* Use opaque white icons on Aero Glass. */
   #TabsToolbar {
-    --lwt-toolbarbutton-icon-fill: white;
+    --toolbarbutton-icon-fill: white;
   }
   } /*** END !proton ***/
 
@@ -93,7 +93,7 @@
     }
   }
 
-  @supports not -moz-bool-pref("browser.proton.enabled") {
+  @media not (-moz-proton) {
   /* Always show full-height tab separators on tabs with borders. */
   .tabbrowser-tab::before,
   .tabbrowser-tab::after {

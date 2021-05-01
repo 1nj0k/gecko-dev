@@ -35,6 +35,7 @@
 #include "vm/ArrayObject.h"
 #include "vm/BigIntType.h"
 #include "vm/GeneratorObject.h"
+#include "vm/GetterSetter.h"
 #include "vm/RegExpShared.h"
 #include "vm/Scope.h"  // GetScopeDataTrailingNames
 #include "vm/Shape.h"
@@ -1078,6 +1079,10 @@ void GCMarker::traverse(BaseShape* thing) {
   traceChildren(thing);
 }
 template <>
+void GCMarker::traverse(GetterSetter* thing) {
+  traceChildren(thing);
+}
+template <>
 void GCMarker::traverse(JS::Symbol* thing) {
   traceChildren(thing);
 }
@@ -1138,13 +1143,6 @@ void GCMarker::traverse(jit::JitCode* thing) {
 template <>
 void GCMarker::traverse(BaseScript* thing) {
   pushThing(thing);
-}
-}  // namespace js
-
-namespace js {
-template <>
-void GCMarker::traverse(AccessorShape* thing) {
-  MOZ_CRASH("AccessorShape must be marked as a Shape");
 }
 }  // namespace js
 
@@ -1279,22 +1277,7 @@ void Shape::traceChildren(JSTracer* trc) {
   if (parent) {
     TraceEdge(trc, &parent, "parent");
   }
-  if (dictNext.isObject()) {
-    JSObject* obj = dictNext.toObject();
-    TraceManuallyBarrieredEdge(trc, &obj, "dictNext object");
-    if (obj != dictNext.toObject()) {
-      dictNext.setObject(obj);
-    }
-  }
-
   cache_.trace(trc);
-
-  if (hasGetterObject()) {
-    TraceManuallyBarrieredEdge(trc, &asAccessorShape().getter_, "getter");
-  }
-  if (hasSetterObject()) {
-    TraceManuallyBarrieredEdge(trc, &asAccessorShape().setter_, "setter");
-  }
 }
 inline void js::GCMarker::eagerlyMarkChildren(Shape* shape) {
   MOZ_ASSERT(shape->isMarked(markColor()));
@@ -1308,27 +1291,10 @@ inline void js::GCMarker::eagerlyMarkChildren(Shape* shape) {
 
     markAndTraverseEdge(shape, shape->propidRef().get());
 
-    // Normally only the last shape in a dictionary list can have a pointer to
-    // an object here, but it's possible that we can see this if we trace
-    // barriers while removing a shape from a dictionary list.
-    if (shape->dictNext.isObject()) {
-      markAndTraverseEdge(shape, shape->dictNext.toObject());
-    }
-
     // Special case: if a shape has a shape table then all its pointers
     // must point to this shape or an anscestor.  Since these pointers will
     // be traced by this loop they do not need to be traced here as well.
     MOZ_ASSERT(shape->canSkipMarkingShapeCache());
-
-    // When triggered between slices on behalf of a barrier, these
-    // objects may reside in the nursery, so require an extra check.
-    // FIXME: Bug 1157967 - remove the isTenured checks.
-    if (shape->hasGetterObject() && shape->getterObject()->isTenured()) {
-      markAndTraverseEdge(shape, shape->getterObject());
-    }
-    if (shape->hasSetterObject() && shape->setterObject()->isTenured()) {
-      markAndTraverseEdge(shape, shape->setterObject());
-    }
 
     shape = shape->previous();
   } while (shape && mark(shape));
@@ -1589,6 +1555,15 @@ void BaseShape::traceChildren(JSTracer* trc) {
 
   if (proto_.isObject()) {
     TraceEdge(trc, &proto_, "baseshape_proto");
+  }
+}
+
+void GetterSetter::traceChildren(JSTracer* trc) {
+  if (getter()) {
+    TraceCellHeaderEdge(trc, this, "gettersetter_getter");
+  }
+  if (setter()) {
+    TraceEdge(trc, &setter_, "gettersetter_setter");
   }
 }
 
@@ -2810,6 +2785,9 @@ js::RegExpShared* TenuringTracer::onRegExpSharedEdge(RegExpShared* shared) {
   return shared;
 }
 js::BaseShape* TenuringTracer::onBaseShapeEdge(BaseShape* base) { return base; }
+js::GetterSetter* TenuringTracer::onGetterSetterEdge(GetterSetter* gs) {
+  return gs;
+}
 js::jit::JitCode* TenuringTracer::onJitCodeEdge(jit::JitCode* code) {
   return code;
 }
@@ -3215,7 +3193,7 @@ JSObject* js::TenuringTracer::moveToTenuredSlow(JSObject* src) {
     if (tarray->hasInlineElements()) {
       AllocKind srcKind = GetGCObjectKind(TypedArrayObject::FIXED_DATA_START);
       size_t headerSize = Arena::thingSize(srcKind);
-      srcSize = headerSize + tarray->byteLength().get();
+      srcSize = headerSize + tarray->byteLength();
     }
   }
 
@@ -3840,6 +3818,9 @@ js::BaseScript* SweepingTracer::onScriptEdge(js::BaseScript* script) {
 BaseShape* SweepingTracer::onBaseShapeEdge(BaseShape* base) {
   return onEdge(base);
 }
+GetterSetter* SweepingTracer::onGetterSetterEdge(GetterSetter* gs) {
+  return onEdge(gs);
+}
 jit::JitCode* SweepingTracer::onJitCodeEdge(jit::JitCode* jit) {
   return onEdge(jit);
 }
@@ -4144,6 +4125,10 @@ BaseShape* BarrierTracer::onBaseShapeEdge(BaseShape* base) {
   PreWriteBarrier(base);
   return base;
 }
+GetterSetter* BarrierTracer::onGetterSetterEdge(GetterSetter* gs) {
+  PreWriteBarrier(gs);
+  return gs;
+}
 Scope* BarrierTracer::onScopeEdge(Scope* scope) {
   PreWriteBarrier(scope);
   return scope;
@@ -4173,7 +4158,6 @@ void BarrierTracer::performBarrier(JS::GCCellPtr cell) {
   MOZ_ASSERT(CurrentThreadCanAccessRuntime(runtime()));
   MOZ_ASSERT(!runtime()->gc.isBackgroundMarking());
   MOZ_ASSERT(!cell.asCell()->isForwarded());
-  MOZ_ASSERT(!cell.asCell()->hasTempHeaderData());
 
   // Mark the cell here to prevent us recording it again.
   if (!cell.asCell()->asTenured().markIfUnmarked()) {
@@ -4230,7 +4214,7 @@ void GCMarker::traceBarrieredCell(JS::GCCellPtr cell) {
     MOZ_ASSERT(thing->isMarkedBlack());
 
     if constexpr (std::is_same_v<decltype(thing), JSString*>) {
-      if (thing->isBeingFlattened()) {
+      if (thing->isRope() && thing->asRope().isBeingFlattened()) {
         // This string is an interior node of a rope that is currently being
         // flattened. The flattening process invokes the barrier on all nodes in
         // the tree, so interior nodes need not be traversed.

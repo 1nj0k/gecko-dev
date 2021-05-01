@@ -14,9 +14,7 @@ const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 
 XPCOMUtils.defineLazyModuleGetters(this, {
   AppConstants: "resource://gre/modules/AppConstants.jsm",
-  setTimeout: "resource://gre/modules/Timer.jsm",
   Downloads: "resource://gre/modules/Downloads.jsm",
-  OfflineAppCacheHelper: "resource://gre/modules/offlineAppCache.jsm",
   ServiceWorkerCleanUp: "resource://gre/modules/ServiceWorkerCleanUp.jsm",
   PlacesUtils: "resource://gre/modules/PlacesUtils.jsm",
 });
@@ -248,109 +246,6 @@ const ImageCacheCleaner = {
   },
 };
 
-const PluginDataCleaner = {
-  deleteByHost(aHost, aOriginAttributes) {
-    return this._deleteInternal((aPh, aTag) => {
-      return new Promise(aResolve => {
-        try {
-          aPh.clearSiteData(
-            aTag,
-            aHost,
-            Ci.nsIPluginHost.FLAG_CLEAR_ALL,
-            -1,
-            aResolve
-          );
-        } catch (e) {
-          // Ignore errors from the plugin, but resolve the promise
-          // We cannot check if something is a bailout or an error
-          aResolve();
-        }
-      });
-    });
-  },
-
-  deleteByRange(aFrom, aTo) {
-    let age = Date.now() / 1000 - aFrom / 1000000;
-
-    return this._deleteInternal((aPh, aTag) => {
-      return new Promise(aResolve => {
-        try {
-          aPh.clearSiteData(
-            aTag,
-            null,
-            Ci.nsIPluginHost.FLAG_CLEAR_ALL,
-            age,
-            aResolve
-          );
-        } catch (e) {
-          aResolve(Cr.NS_ERROR_PLUGIN_TIME_RANGE_NOT_SUPPORTED);
-        }
-      }).then(aRv => {
-        // If the plugin doesn't support clearing by age, clear everything.
-        if (aRv == Cr.NS_ERROR_PLUGIN_TIME_RANGE_NOT_SUPPORTED) {
-          return new Promise(aResolve => {
-            try {
-              aPh.clearSiteData(
-                aTag,
-                null,
-                Ci.nsIPluginHost.FLAG_CLEAR_ALL,
-                -1,
-                aResolve
-              );
-            } catch (e) {
-              aResolve();
-            }
-          });
-        }
-
-        return true;
-      });
-    });
-  },
-
-  deleteAll() {
-    return this._deleteInternal((aPh, aTag) => {
-      return new Promise(aResolve => {
-        try {
-          aPh.clearSiteData(
-            aTag,
-            null,
-            Ci.nsIPluginHost.FLAG_CLEAR_ALL,
-            -1,
-            aResolve
-          );
-        } catch (e) {
-          aResolve();
-        }
-      });
-    });
-  },
-
-  _deleteInternal(aCb) {
-    let ph = Cc["@mozilla.org/plugin/host;1"].getService(Ci.nsIPluginHost);
-
-    let promises = [];
-    let tags = ph.getPluginTags();
-    for (let tag of tags) {
-      if (tag.loaded) {
-        promises.push(aCb(ph, tag));
-      }
-    }
-
-    // As evidenced in bug 1253204, clearing plugin data can sometimes be
-    // very, very long, for mysterious reasons. Unfortunately, this is not
-    // something actionable by Mozilla, so crashing here serves no purpose.
-    //
-    // For this reason, instead of waiting for sanitization to always
-    // complete, we introduce a soft timeout. Once this timeout has
-    // elapsed, we proceed with the shutdown of Firefox.
-    return Promise.race([
-      Promise.all(promises),
-      new Promise(aResolve => setTimeout(aResolve, 10000 /* 10 seconds */)),
-    ]);
-  },
-};
-
 const DownloadsCleaner = {
   deleteByHost(aHost, aOriginAttributes) {
     return Downloads.getList(Downloads.ALL).then(aList => {
@@ -439,26 +334,6 @@ const MediaDevicesCleaner = {
       mediaMgr.sanitizeDeviceIds(null);
       aResolve();
     });
-  },
-};
-
-const AppCacheCleaner = {
-  deleteByOriginAttributes(aOriginAttributesString) {
-    return new Promise(aResolve => {
-      let appCacheService = Cc[
-        "@mozilla.org/network/application-cache-service;1"
-      ].getService(Ci.nsIApplicationCacheService);
-      try {
-        appCacheService.evictMatchingOriginAttributes(aOriginAttributesString);
-      } catch (ex) {}
-      aResolve();
-    });
-  },
-
-  deleteAll() {
-    // AppCache: this doesn't wait for the cleanup to be complete.
-    OfflineAppCacheHelper.clear();
-    return Promise.resolve();
   },
 };
 
@@ -1074,7 +949,7 @@ const AboutHomeStartupCacheCleaner = {
 
     return new Promise((aResolve, aReject) => {
       let lci = Services.loadContextInfo.default;
-      let storage = Services.cache2.diskCacheStorage(lci, false);
+      let storage = Services.cache2.diskCacheStorage(lci);
       let uri = Services.io.newURI("about:home");
       try {
         storage.asyncDoomURI(uri, "", {
@@ -1125,11 +1000,6 @@ const FLAGS_MAP = [
   },
 
   {
-    flag: Ci.nsIClearDataService.CLEAR_PLUGIN_DATA,
-    cleaners: [PluginDataCleaner],
-  },
-
-  {
     flag: Ci.nsIClearDataService.CLEAR_DOWNLOADS,
     cleaners: [DownloadsCleaner, AboutHomeStartupCacheCleaner],
   },
@@ -1143,8 +1013,6 @@ const FLAGS_MAP = [
     flag: Ci.nsIClearDataService.CLEAR_MEDIA_DEVICES,
     cleaners: [MediaDevicesCleaner],
   },
-
-  { flag: Ci.nsIClearDataService.CLEAR_APPCACHE, cleaners: [AppCacheCleaner] },
 
   { flag: Ci.nsIClearDataService.CLEAR_DOM_QUOTA, cleaners: [QuotaCleaner] },
 

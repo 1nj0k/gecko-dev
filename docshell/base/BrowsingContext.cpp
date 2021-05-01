@@ -439,6 +439,9 @@ already_AddRefed<BrowsingContext> BrowsingContext::CreateDetached(
 
 already_AddRefed<BrowsingContext> BrowsingContext::CreateIndependent(
     Type aType) {
+  MOZ_DIAGNOSTIC_ASSERT(XRE_IsParentProcess(),
+                        "BCs created in the content process must be related to "
+                        "some BrowserChild");
   RefPtr<BrowsingContext> bc(
       CreateDetached(nullptr, nullptr, nullptr, u""_ns, aType));
   bc->mWindowless = bc->IsContent();
@@ -532,6 +535,7 @@ BrowsingContext::BrowsingContext(WindowContext* aParentWindow,
       mUseRemoteTabs(false),
       mUseRemoteSubframes(false),
       mCreatedDynamically(false),
+      mIsInBFCache(false),
       mChildOffset(0) {
   MOZ_RELEASE_ASSERT(!mParentWindow || mParentWindow->Group() == mGroup);
   MOZ_RELEASE_ASSERT(mBrowsingContextId != 0);
@@ -685,6 +689,13 @@ void BrowsingContext::SetEmbedderElement(Element* aEmbedder) {
   }
 
   mEmbedderElement = aEmbedder;
+
+  if (mEmbedderElement) {
+    if (nsCOMPtr<nsIObserverService> obs = services::GetObserverService()) {
+      obs->NotifyWhenScriptSafe(ToSupports(this),
+                                "browsing-context-did-set-embedder", nullptr);
+    }
+  }
 }
 
 void BrowsingContext::Embed() {
@@ -695,6 +706,7 @@ void BrowsingContext::Embed() {
 
 void BrowsingContext::Attach(bool aFromIPC, ContentParent* aOriginProcess) {
   MOZ_DIAGNOSTIC_ASSERT(!mEverAttached);
+  MOZ_DIAGNOSTIC_ASSERT_IF(aFromIPC, aOriginProcess || XRE_IsContentProcess());
   mEverAttached = true;
 
   if (MOZ_LOG_TEST(GetLog(), LogLevel::Debug)) {
@@ -745,6 +757,18 @@ void BrowsingContext::Attach(bool aFromIPC, ContentParent* aOriginProcess) {
     ContentChild::GetSingleton()->SendCreateBrowsingContext(
         mGroup->Id(), GetIPCInitializer());
   } else if (XRE_IsParentProcess()) {
+    // If this window was created as a subframe by a content process, it must be
+    // being hosted within the same BrowserParent as its mParentWindow.
+    // Toplevel BrowsingContexts created by content have their BrowserParent
+    // configured during `RecvConstructPopupBrowser`.
+    if (mParentWindow && aOriginProcess) {
+      MOZ_DIAGNOSTIC_ASSERT(
+          mParentWindow->Canonical()->GetContentParent() == aOriginProcess,
+          "Creator process isn't the same as our embedder?");
+      Canonical()->SetCurrentBrowserParent(
+          mParentWindow->Canonical()->GetBrowserParent());
+    }
+
     mGroup->EachOtherParent(aOriginProcess, [&](ContentParent* aParent) {
       MOZ_DIAGNOSTIC_ASSERT(IsContent(),
                             "chrome BCG cannot be synced to content process");
@@ -2197,8 +2221,10 @@ std::tuple<bool, bool> BrowsingContext::CanFocusCheck(CallerType aCallerType) {
   bool canFocus = aCallerType == CallerType::System ||
                   !Preferences::GetBool("dom.disable_window_flip", true);
   if (!canFocus && openerBC == callerBC) {
-    canFocus = (RevisePopupAbuseLevel(PopupBlocker::GetPopupControlState()) <
-                PopupBlocker::openBlocked);
+    canFocus =
+        (callerBC ? callerBC : this)
+            ->RevisePopupAbuseLevel(PopupBlocker::GetPopupControlState()) <
+        PopupBlocker::openBlocked;
   }
 
   bool isActive = false;
@@ -2555,9 +2581,13 @@ void BrowsingContext::DidSet(FieldIndex<IDX_ExplicitActive>,
   });
 }
 
-bool BrowsingContext::CanSet(FieldIndex<IDX_HasMainMediaController>,
-                             bool aNewValue, ContentParent* aSource) {
-  return IsTop() && LegacyCheckOnlyOwningProcessCanSet(aSource);
+auto BrowsingContext::CanSet(FieldIndex<IDX_HasMainMediaController>,
+                             bool aNewValue, ContentParent* aSource)
+    -> CanSetResult {
+  if (!IsTop()) {
+    return CanSetResult::Deny;
+  }
+  return LegacyRevertIfNotOwningOrParentProcess(aSource);
 }
 
 void BrowsingContext::DidSet(FieldIndex<IDX_HasMainMediaController>,
@@ -2716,6 +2746,11 @@ void BrowsingContext::DidSet(FieldIndex<IDX_IsInBFCache>) {
   MOZ_DIAGNOSTIC_ASSERT(IsTop());
 
   const bool isInBFCache = GetIsInBFCache();
+  if (!isInBFCache) {
+    PreOrderWalk(
+        [&](BrowsingContext* aContext) { aContext->mIsInBFCache = false; });
+  }
+
   PreOrderWalk([&](BrowsingContext* aContext) {
     nsCOMPtr<nsIDocShell> shell = aContext->GetDocShell();
     if (shell) {
@@ -2723,6 +2758,11 @@ void BrowsingContext::DidSet(FieldIndex<IDX_IsInBFCache>) {
           ->FirePageHideShowNonRecursive(!isInBFCache);
     }
   });
+
+  if (isInBFCache) {
+    PreOrderWalk(
+        [&](BrowsingContext* aContext) { aContext->mIsInBFCache = true; });
+  }
 }
 
 void BrowsingContext::SetCustomPlatform(const nsAString& aPlatform,
@@ -2739,25 +2779,6 @@ void BrowsingContext::DidSet(FieldIndex<IDX_PlatformOverride>) {
       shell->ClearCachedPlatform();
     }
   });
-}
-
-bool BrowsingContext::LegacyCheckOnlyOwningProcessCanSet(
-    ContentParent* aSource) {
-  if (aSource) {
-    MOZ_ASSERT(XRE_IsParentProcess());
-
-    // Double-check ownership if we aren't the setter.
-    if (!Canonical()->IsOwnedByProcess(aSource->ChildID()) &&
-        aSource->ChildID() != Canonical()->GetInFlightProcessId()) {
-      return false;
-    }
-  } else if (!IsInProcess() && !XRE_IsParentProcess()) {
-    // Don't allow this to be set from content processes that
-    // don't own the BrowsingContext.
-    return false;
-  }
-
-  return true;
 }
 
 auto BrowsingContext::LegacyRevertIfNotOwningOrParentProcess(
@@ -2819,10 +2840,10 @@ auto BrowsingContext::CanSet(FieldIndex<IDX_AllowContentRetargetingOnChildren>,
   return LegacyRevertIfNotOwningOrParentProcess(aSource);
 }
 
-bool BrowsingContext::CanSet(FieldIndex<IDX_AllowPlugins>,
-                             const bool& aAllowPlugins,
-                             ContentParent* aSource) {
-  return LegacyCheckOnlyOwningProcessCanSet(aSource);
+auto BrowsingContext::CanSet(FieldIndex<IDX_AllowPlugins>,
+                             const bool& aAllowPlugins, ContentParent* aSource)
+    -> CanSetResult {
+  return LegacyRevertIfNotOwningOrParentProcess(aSource);
 }
 
 bool BrowsingContext::CanSet(FieldIndex<IDX_FullscreenAllowedByOwner>,
@@ -3351,16 +3372,17 @@ void BrowsingContext::RemoveFromSessionHistory(const nsID& aChangeID) {
 
 void BrowsingContext::HistoryGo(int32_t aOffset, uint64_t aHistoryEpoch,
                                 bool aRequireUserInteraction,
+                                bool aUserActivation,
                                 std::function<void(int32_t&&)>&& aResolver) {
   if (XRE_IsContentProcess()) {
     ContentChild::GetSingleton()->SendHistoryGo(
-        this, aOffset, aHistoryEpoch, aRequireUserInteraction,
+        this, aOffset, aHistoryEpoch, aRequireUserInteraction, aUserActivation,
         std::move(aResolver),
         [](mozilla::ipc::
                ResponseRejectReason) { /* FIXME Is ignoring this fine? */ });
   } else {
     Canonical()->HistoryGo(
-        aOffset, aHistoryEpoch, aRequireUserInteraction,
+        aOffset, aHistoryEpoch, aRequireUserInteraction, aUserActivation,
         Canonical()->GetContentParent()
             ? Some(Canonical()->GetContentParent()->ChildID())
             : Nothing(),

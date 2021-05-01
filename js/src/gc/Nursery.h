@@ -135,6 +135,7 @@ class TenuringTracer final : public GenericTracer {
   js::Shape* onShapeEdge(Shape* shape) override;
   js::RegExpShared* onRegExpSharedEdge(RegExpShared* shared) override;
   js::BaseShape* onBaseShapeEdge(BaseShape* base) override;
+  js::GetterSetter* onGetterSetterEdge(GetterSetter* gs) override;
   js::jit::JitCode* onJitCodeEdge(jit::JitCode* code) override;
   js::Scope* onScopeEdge(Scope* scope) override;
 
@@ -343,8 +344,6 @@ class Nursery {
     MOZ_ASSERT(isEnabled());
     return cellsWithUid_.append(cell);
   }
-
-  [[nodiscard]] bool queueDictionaryModeObjectToSweep(NativeObject* obj);
 
   size_t sizeOfMallocedBuffers(mozilla::MallocSizeOf mallocSizeOf) const {
     size_t total = 0;
@@ -568,9 +567,6 @@ class Nursery {
   using CellsWithUniqueIdVector = Vector<gc::Cell*, 8, SystemAllocPolicy>;
   CellsWithUniqueIdVector cellsWithUid_;
 
-  using NativeObjectVector = Vector<NativeObject*, 0, SystemAllocPolicy>;
-  NativeObjectVector dictionaryModeObjects_;
-
   template <typename Key>
   struct DeduplicationStringHasher {
     using Lookup = Key;
@@ -736,7 +732,6 @@ class Nursery {
   // the nursery on debug & nightly builds.
   void clear();
 
-  void sweepDictionaryModeObjects();
   void sweepMapAndSetObjects();
 
   // Change the allocable space provided by the nursery.

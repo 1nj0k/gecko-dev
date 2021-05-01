@@ -100,3 +100,23 @@ function testNonWritableFrom() {
     assertEq(Object.getOwnPropertyDescriptor(to, "x").writable, true);
 }
 testNonWritableFrom();
+
+function testFrozenProto() {
+    var proto = Object.freeze({x: 1});
+    var target = Object.create(proto);
+    Object.assign(target, {foo: 1});
+    assertEq(target.foo, 1);
+    assertThrowsInstanceOf(() => Object.assign(target, {x: 2}), TypeError);
+    assertEq(target.x, 1);
+}
+testFrozenProto();
+
+function testReuseShape() {
+    var from = {};
+    from.x = 1;
+    from.y = 2;
+    var to = Object.assign({}, from);
+    assertEq(to.x, 1);
+    assertEq(to.y, 2);
+}
+testReuseShape();

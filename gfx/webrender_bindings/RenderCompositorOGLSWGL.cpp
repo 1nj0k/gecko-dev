@@ -36,7 +36,7 @@ using namespace layers;
 namespace wr {
 
 UniquePtr<RenderCompositor> RenderCompositorOGLSWGL::Create(
-    RefPtr<widget::CompositorWidget>&& aWidget, nsACString& aError) {
+    const RefPtr<widget::CompositorWidget>& aWidget, nsACString& aError) {
   if (!aWidget->GetCompositorOptions().AllowSoftwareWebRenderOGL()) {
     return nullptr;
   }
@@ -88,14 +88,13 @@ UniquePtr<RenderCompositor> RenderCompositorOGLSWGL::Create(
     return nullptr;
   }
 
-  return MakeUnique<RenderCompositorOGLSWGL>(compositor, std::move(aWidget),
-                                             ctx);
+  return MakeUnique<RenderCompositorOGLSWGL>(compositor, aWidget, ctx);
 }
 
 RenderCompositorOGLSWGL::RenderCompositorOGLSWGL(
-    Compositor* aCompositor, RefPtr<widget::CompositorWidget>&& aWidget,
+    Compositor* aCompositor, const RefPtr<widget::CompositorWidget>& aWidget,
     void* aContext)
-    : RenderCompositorLayersSWGL(aCompositor, std::move(aWidget), aContext) {}
+    : RenderCompositorLayersSWGL(aCompositor, aWidget, aContext) {}
 
 RenderCompositorOGLSWGL::~RenderCompositorOGLSWGL() {
 #ifdef OZ_WIDGET_ANDROID
@@ -304,7 +303,7 @@ class PBOUnpackSurface : public gfx::DataSourceSurface {
 
   // PBO offsets need to start from a 0 address, but DataSourceSurface::Map
   // checks for failure by comparing the address against nullptr. Override Map
-  // to work around this. Due to DataSourceSurface::Map checking for failure via
+  // to work around this.
   bool Map(MapType, MappedSurface* aMappedSurface) override {
     aMappedSurface->mData = GetData();
     aMappedSurface->mStride = Stride();
@@ -410,6 +409,7 @@ void RenderCompositorOGLSWGL::TileOGL::Unmap(const gfx::IntRect& aDirtyRect) {
     mTexture->Update(mSurface, &dirty);
     gl->fBindBuffer(LOCAL_GL_PIXEL_UNPACK_BUFFER, 0);
   } else {
+    mSurface->Unmap();
     mTexture->Update(mSurface, &dirty);
   }
 }

@@ -574,9 +574,9 @@ static bool IsFontSizeInflationContainer(nsIFrame* aFrame,
        (aFrame->GetParent()->GetContent() == content) ||
        (content &&
         // Form controls shouldn't become inflation containers.
-        (content->IsAnyOfHTMLElements(nsGkAtoms::option, nsGkAtoms::optgroup,
-                                      nsGkAtoms::select, nsGkAtoms::input,
-                                      nsGkAtoms::button)))) &&
+        (content->IsAnyOfHTMLElements(
+            nsGkAtoms::option, nsGkAtoms::optgroup, nsGkAtoms::select,
+            nsGkAtoms::input, nsGkAtoms::button, nsGkAtoms::textarea)))) &&
       !(aFrame->IsXULBoxFrame() && aFrame->GetParent()->IsXULBoxFrame());
   NS_ASSERTION(!aFrame->IsFrameOfType(nsIFrame::eLineParticipant) || isInline ||
                    // br frames and mathml frames report being line
@@ -6146,25 +6146,21 @@ nsIFrame::SizeComputationResult nsIFrame::ComputeSize(
 
   const bool isOrthogonal = aWM.IsOrthogonalTo(alignCB->GetWritingMode());
   const bool isAutoISize = styleISize.IsAuto();
+  const bool isAutoBSize =
+      nsLayoutUtils::IsAutoBSize(styleBSize, aCBSize.BSize(aWM)) ||
+      aFlags.contains(ComputeSizeFlag::UseAutoBSize);
   // Compute inline-axis size
   if (!isAutoISize) {
-    auto iSizeResult =
-        ComputeISizeValue(aRenderingContext, aWM, aCBSize, boxSizingAdjust,
-                          boxSizingToMarginEdgeISize, styleISize, aFlags);
+    auto iSizeResult = ComputeISizeValue(
+        aRenderingContext, aWM, aCBSize, boxSizingAdjust,
+        boxSizingToMarginEdgeISize, styleISize, aSizeOverrides, aFlags);
     result.ISize(aWM) = iSizeResult.mISize;
     aspectRatioUsage = iSizeResult.mAspectRatioUsage;
-  } else if (aspectRatio &&
-             !nsLayoutUtils::IsAutoBSize(styleBSize, aCBSize.BSize(aWM))) {
-    auto bSize = nsLayoutUtils::ComputeBSizeValue(
-        aCBSize.BSize(aWM), boxSizingAdjust.BSize(aWM),
-        styleBSize.AsLengthPercentage());
-    result.ISize(aWM) = aspectRatio.ComputeRatioDependentSize(
-        LogicalAxis::eLogicalAxisInline, aWM, bSize, boxSizingAdjust);
-    aspectRatioUsage = AspectRatioUsage::ToComputeISize;
   } else if (MOZ_UNLIKELY(isGridItem) && !IsTrueOverflowContainer()) {
     // 'auto' inline-size for grid-level box - fill the CB for 'stretch' /
     // 'normal' and clamp it to the CB if requested:
     bool stretch = false;
+    bool mayUseAspectRatio = aspectRatio && !isAutoBSize;
     if (!aFlags.contains(ComputeSizeFlag::ShrinkWrap) &&
         !StyleMargin()->HasInlineAxisAuto(aWM) &&
         !alignCB->IsMasonry(isOrthogonal ? eLogicalAxisBlock
@@ -6172,9 +6168,30 @@ nsIFrame::SizeComputationResult nsIFrame::ComputeSize(
       auto inlineAxisAlignment =
           isOrthogonal ? StylePosition()->UsedAlignSelf(alignCB->Style())._0
                        : StylePosition()->UsedJustifySelf(alignCB->Style())._0;
-      stretch = inlineAxisAlignment == StyleAlignFlags::NORMAL ||
-                inlineAxisAlignment == StyleAlignFlags::STRETCH;
+      stretch = inlineAxisAlignment == StyleAlignFlags::STRETCH ||
+                (inlineAxisAlignment == StyleAlignFlags::NORMAL &&
+                 !mayUseAspectRatio);
     }
+
+    // Apply the preferred aspect ratio for alignments other than *stretch* and
+    // *normal without aspect ratio*.
+    // The spec says all other values should size the items as fit-content, and
+    // the intrinsic size should respect the preferred aspect ratio, so we also
+    // apply aspect ratio for all other values.
+    // https://drafts.csswg.org/css-grid/#grid-item-sizing
+    if (!stretch && mayUseAspectRatio) {
+      // Note: we don't need to handle aspect ratio for inline axis if both
+      // width/height are auto. The default ratio-dependent axis is block axis
+      // in this case, so we can simply get the block size from the non-auto
+      // |styleBSize|.
+      auto bSize = nsLayoutUtils::ComputeBSizeValue(
+          aCBSize.BSize(aWM), boxSizingAdjust.BSize(aWM),
+          styleBSize.AsLengthPercentage());
+      result.ISize(aWM) = aspectRatio.ComputeRatioDependentSize(
+          LogicalAxis::eLogicalAxisInline, aWM, bSize, boxSizingAdjust);
+      aspectRatioUsage = AspectRatioUsage::ToComputeISize;
+    }
+
     if (stretch || aFlags.contains(ComputeSizeFlag::IClampMarginBoxMinSize)) {
       auto iSizeToFillCB =
           std::max(nscoord(0), aCBSize.ISize(aWM) - aBorderPadding.ISize(aWM) -
@@ -6183,20 +6200,23 @@ nsIFrame::SizeComputationResult nsIFrame::ComputeSize(
         result.ISize(aWM) = iSizeToFillCB;
       }
     }
+  } else if (aspectRatio && !isAutoBSize) {
+    auto bSize = nsLayoutUtils::ComputeBSizeValue(
+        aCBSize.BSize(aWM), boxSizingAdjust.BSize(aWM),
+        styleBSize.AsLengthPercentage());
+    result.ISize(aWM) = aspectRatio.ComputeRatioDependentSize(
+        LogicalAxis::eLogicalAxisInline, aWM, bSize, boxSizingAdjust);
+    aspectRatioUsage = AspectRatioUsage::ToComputeISize;
   }
 
-  // Calculate and apply min max transferred size contraint.
-  // https://github.com/w3c/csswg-drafts/issues/5257
-  // If we have definite preferred size, the transferred minimum and maximum
-  // are clampled by it. This means transferred minimum and maximum don't have
-  // effects with definite preferred size.
+  // Calculate and apply transferred min & max size contraints.
+  // https://drafts.csswg.org/css-sizing-4/#aspect-ratio-size-transfers
   //
-  // Note: The axis in which the preferred size calculation depends on this
-  // aspect ratio is called the ratio-dependent axis, and the resulting size
-  // is definite if its input sizes are also definite.
-  const bool isDefiniteISize =
-      styleISize.IsLengthPercentage() ||
-      aspectRatioUsage == AspectRatioUsage::ToComputeISize;
+  // Note: The basic principle is that sizing constraints transfer through the
+  // aspect-ratio to the other side to preserve the aspect ratio to the extent
+  // that they can without violating any sizes specified explicitly on that
+  // affected axis.
+  const bool isDefiniteISize = styleISize.IsLengthPercentage();
   const bool isFlexItemInlineAxisMainAxis =
       isFlexItem && flexMainAxis == eLogicalAxisInline;
   const auto& minBSizeCoord = stylePos->MinBSize(aWM);
@@ -6228,20 +6248,20 @@ nsIFrame::SizeComputationResult nsIFrame::ComputeSize(
   const auto& maxISizeCoord = stylePos->MaxISize(aWM);
   nscoord maxISize = NS_UNCONSTRAINEDSIZE;
   if (!maxISizeCoord.IsNone() && !isFlexItemInlineAxisMainAxis) {
-    maxISize =
-        ComputeISizeValue(aRenderingContext, aWM, aCBSize, boxSizingAdjust,
-                          boxSizingToMarginEdgeISize, maxISizeCoord, aFlags)
-            .mISize;
+    maxISize = ComputeISizeValue(aRenderingContext, aWM, aCBSize,
+                                 boxSizingAdjust, boxSizingToMarginEdgeISize,
+                                 maxISizeCoord, aSizeOverrides, aFlags)
+                   .mISize;
     result.ISize(aWM) = std::min(maxISize, result.ISize(aWM));
   }
 
   const auto& minISizeCoord = stylePos->MinISize(aWM);
   nscoord minISize;
   if (!minISizeCoord.IsAuto() && !isFlexItemInlineAxisMainAxis) {
-    minISize =
-        ComputeISizeValue(aRenderingContext, aWM, aCBSize, boxSizingAdjust,
-                          boxSizingToMarginEdgeISize, minISizeCoord, aFlags)
-            .mISize;
+    minISize = ComputeISizeValue(aRenderingContext, aWM, aCBSize,
+                                 boxSizingAdjust, boxSizingToMarginEdgeISize,
+                                 minISizeCoord, aSizeOverrides, aFlags)
+                   .mISize;
   } else if (MOZ_UNLIKELY(
                  aFlags.contains(ComputeSizeFlag::IApplyAutoMinSize))) {
     // This implements "Implied Minimum Size of Grid Items".
@@ -6283,54 +6303,71 @@ nsIFrame::SizeComputationResult nsIFrame::ComputeSize(
   // Compute block-axis size
   // (but not if we have auto bsize or if we received the "UseAutoBSize"
   // flag -- then, we'll just stick with the bsize that we already calculated
-  // in the initial ComputeAutoSize() call.)
-  if (!aFlags.contains(ComputeSizeFlag::UseAutoBSize)) {
-    if (!nsLayoutUtils::IsAutoBSize(styleBSize, aCBSize.BSize(aWM))) {
-      result.BSize(aWM) = nsLayoutUtils::ComputeBSizeValue(
-          aCBSize.BSize(aWM), boxSizingAdjust.BSize(aWM),
-          styleBSize.AsLengthPercentage());
-    } else if (aspectRatio) {
-      // If both inline and block dimensions are auto (i.e. weak size
-      // constraints), the block axis is the ratio-dependent axis.
-      // If we have a super large inline size, aspect-ratio should still be
-      // applied. That's why we apply aspect-ratio unconditionally for auto
-      // block size here.
-      // FIXME: Bug 1690423 moves this part below the handle of grid, so this
-      // shouldn't affect grid layout.
-      result.BSize(aWM) = aspectRatio.ComputeRatioDependentSize(
-          LogicalAxis::eLogicalAxisBlock, aWM, result.ISize(aWM),
-          boxSizingAdjust);
-      MOZ_ASSERT(aspectRatioUsage == AspectRatioUsage::None);
-      aspectRatioUsage = AspectRatioUsage::ToComputeBSize;
-    } else if (MOZ_UNLIKELY(isGridItem) && styleBSize.IsAuto() &&
-               !IsTrueOverflowContainer() &&
-               !alignCB->IsMasonry(isOrthogonal ? eLogicalAxisInline
-                                                : eLogicalAxisBlock)) {
-      auto cbSize = aCBSize.BSize(aWM);
-      if (cbSize != NS_UNCONSTRAINEDSIZE) {
-        // 'auto' block-size for grid-level box - fill the CB for 'stretch' /
-        // 'normal' and clamp it to the CB if requested:
-        bool stretch = false;
-        if (!StyleMargin()->HasBlockAxisAuto(aWM)) {
-          auto blockAxisAlignment =
-              isOrthogonal
-                  ? StylePosition()->UsedJustifySelf(alignCB->Style())._0
-                  : StylePosition()->UsedAlignSelf(alignCB->Style())._0;
-          stretch = blockAxisAlignment == StyleAlignFlags::NORMAL ||
-                    blockAxisAlignment == StyleAlignFlags::STRETCH;
-        }
-        if (stretch ||
-            aFlags.contains(ComputeSizeFlag::BClampMarginBoxMinSize)) {
-          auto bSizeToFillCB =
-              std::max(nscoord(0),
-                       cbSize - aBorderPadding.BSize(aWM) - aMargin.BSize(aWM));
-          if (stretch || (result.BSize(aWM) != NS_UNCONSTRAINEDSIZE &&
-                          result.BSize(aWM) > bSizeToFillCB)) {
-            result.BSize(aWM) = bSizeToFillCB;
-          }
+  // in the initial ComputeAutoSize() call. However, if we have a valid
+  // preferred aspect ratio, we still have to compute the block size because
+  // aspect ratio affects the intrinsic content size.)
+  if (!isAutoBSize) {
+    result.BSize(aWM) = nsLayoutUtils::ComputeBSizeValue(
+        aCBSize.BSize(aWM), boxSizingAdjust.BSize(aWM),
+        styleBSize.AsLengthPercentage());
+  } else if (MOZ_UNLIKELY(isGridItem) &&
+             // FIXME: Any better way to refine the auto check here?
+             styleBSize.IsAuto() &&
+             !aFlags.contains(ComputeSizeFlag::UseAutoBSize) &&
+             !IsTrueOverflowContainer() &&
+             !alignCB->IsMasonry(isOrthogonal ? eLogicalAxisInline
+                                              : eLogicalAxisBlock)) {
+    auto cbSize = aCBSize.BSize(aWM);
+    if (cbSize != NS_UNCONSTRAINEDSIZE) {
+      // 'auto' block-size for grid-level box - fill the CB for 'stretch' /
+      // 'normal' and clamp it to the CB if requested:
+      bool stretch = false;
+      bool mayUseAspectRatio =
+          aspectRatio && result.ISize(aWM) != NS_UNCONSTRAINEDSIZE;
+      if (!StyleMargin()->HasBlockAxisAuto(aWM)) {
+        auto blockAxisAlignment =
+            isOrthogonal ? StylePosition()->UsedJustifySelf(alignCB->Style())._0
+                         : StylePosition()->UsedAlignSelf(alignCB->Style())._0;
+        stretch = blockAxisAlignment == StyleAlignFlags::STRETCH ||
+                  (blockAxisAlignment == StyleAlignFlags::NORMAL &&
+                   !mayUseAspectRatio);
+      }
+
+      // Apply the preferred aspect ratio for alignments other than *stretch*
+      // and *normal without aspect ratio*.
+      // The spec says all other values should size the items as fit-content,
+      // and the intrinsic size should respect the preferred aspect ratio, so
+      // we also apply aspect ratio for all other values.
+      // https://drafts.csswg.org/css-grid/#grid-item-sizing
+      if (!stretch && mayUseAspectRatio) {
+        result.BSize(aWM) = aspectRatio.ComputeRatioDependentSize(
+            LogicalAxis::eLogicalAxisBlock, aWM, result.ISize(aWM),
+            boxSizingAdjust);
+        MOZ_ASSERT(aspectRatioUsage == AspectRatioUsage::None);
+        aspectRatioUsage = AspectRatioUsage::ToComputeBSize;
+      }
+
+      if (stretch || aFlags.contains(ComputeSizeFlag::BClampMarginBoxMinSize)) {
+        auto bSizeToFillCB =
+            std::max(nscoord(0),
+                     cbSize - aBorderPadding.BSize(aWM) - aMargin.BSize(aWM));
+        if (stretch || (result.BSize(aWM) != NS_UNCONSTRAINEDSIZE &&
+                        result.BSize(aWM) > bSizeToFillCB)) {
+          result.BSize(aWM) = bSizeToFillCB;
         }
       }
     }
+  } else if (aspectRatio) {
+    // If both inline and block dimensions are auto, the block axis is the
+    // ratio-dependent axis by default.
+    // If we have a super large inline size, aspect-ratio should still be
+    // applied (so aspectRatioUsage flag is set as expected). That's why we
+    // apply aspect-ratio unconditionally for auto block size here.
+    result.BSize(aWM) = aspectRatio.ComputeRatioDependentSize(
+        LogicalAxis::eLogicalAxisBlock, aWM, result.ISize(aWM),
+        boxSizingAdjust);
+    MOZ_ASSERT(aspectRatioUsage == AspectRatioUsage::None);
+    aspectRatioUsage = AspectRatioUsage::ToComputeBSize;
   }
 
   if (result.BSize(aWM) != NS_UNCONSTRAINEDSIZE) {
@@ -6437,15 +6474,21 @@ nscoord nsIFrame::ShrinkWidthToFit(gfxContext* aRenderingContext,
 
 Maybe<nscoord> nsIFrame::ComputeInlineSizeFromAspectRatio(
     WritingMode aWM, const LogicalSize& aCBSize,
-    const LogicalSize& aContentEdgeToBoxSizing, ComputeSizeFlags aFlags) const {
+    const LogicalSize& aContentEdgeToBoxSizing,
+    const StyleSizeOverrides& aSizeOverrides, ComputeSizeFlags aFlags) const {
   // FIXME: Bug 1670151: Use GetAspectRatio() to cover replaced elements (and
   // then we can drop the check of eSupportsAspectRatio).
-  const AspectRatio aspectRatio = StylePosition()->mAspectRatio.ToLayoutRatio();
+  const AspectRatio aspectRatio =
+      aSizeOverrides.mAspectRatio
+          ? *aSizeOverrides.mAspectRatio
+          : StylePosition()->mAspectRatio.ToLayoutRatio();
   if (!IsFrameOfType(eSupportsAspectRatio) || !aspectRatio) {
     return Nothing();
   }
 
-  const StyleSize& styleBSize = StylePosition()->BSize(aWM);
+  const StyleSize& styleBSize = aSizeOverrides.mStyleBSize
+                                    ? *aSizeOverrides.mStyleBSize
+                                    : StylePosition()->BSize(aWM);
   if (aFlags.contains(ComputeSizeFlag::UseAutoBSize) ||
       nsLayoutUtils::IsAutoBSize(styleBSize, aCBSize.BSize(aWM))) {
     return Nothing();
@@ -6463,7 +6506,8 @@ nsIFrame::ISizeComputationResult nsIFrame::ComputeISizeValue(
     gfxContext* aRenderingContext, const WritingMode aWM,
     const LogicalSize& aContainingBlockSize,
     const LogicalSize& aContentEdgeToBoxSizing, nscoord aBoxSizingToMarginEdge,
-    ExtremumLength aSize, ComputeSizeFlags aFlags) {
+    ExtremumLength aSize, const StyleSizeOverrides& aSizeOverrides,
+    ComputeSizeFlags aFlags) {
   // If 'this' is a container for font size inflation, then shrink
   // wrapping inside of it should not apply font size inflation.
   AutoMaybeDisableFontInflation an(this);
@@ -6474,7 +6518,8 @@ nsIFrame::ISizeComputationResult nsIFrame::ComputeISizeValue(
       aSize == ExtremumLength::MozAvailable
           ? Nothing()
           : ComputeInlineSizeFromAspectRatio(aWM, aContainingBlockSize,
-                                             aContentEdgeToBoxSizing, aFlags);
+                                             aContentEdgeToBoxSizing,
+                                             aSizeOverrides, aFlags);
   nscoord result;
   switch (aSize) {
     case ExtremumLength::MaxContent:
@@ -7189,7 +7234,9 @@ void nsIFrame::ClearInvalidationStateBits() {
 
 void nsIFrame::InvalidateFrame(uint32_t aDisplayItemKey,
                                bool aRebuildDisplayItems /* = true */) {
-  bool hasDisplayItem = !aDisplayItemKey || HasDisplayItem(aDisplayItemKey);
+  bool hasDisplayItem =
+      !aDisplayItemKey ||
+      FrameLayerBuilder::HasRetainedDataFor(this, aDisplayItemKey);
   InvalidateFrameInternal(this, hasDisplayItem, aRebuildDisplayItems);
 }
 
@@ -7199,7 +7246,9 @@ void nsIFrame::InvalidateFrameWithRect(const nsRect& aRect,
   if (aRect.IsEmpty()) {
     return;
   }
-  bool hasDisplayItem = !aDisplayItemKey || HasDisplayItem(aDisplayItemKey);
+  bool hasDisplayItem =
+      !aDisplayItemKey ||
+      FrameLayerBuilder::HasRetainedDataFor(this, aDisplayItemKey);
   bool alreadyInvalid = false;
   if (!HasAnyStateBits(NS_FRAME_NEEDS_PAINT)) {
     InvalidateFrameInternal(this, hasDisplayItem, aRebuildDisplayItems);
@@ -8790,6 +8839,8 @@ nsresult nsIFrame::PeekOffsetForLine(nsPeekOffsetStruct* aPos) {
 nsresult nsIFrame::PeekOffsetForLineEdge(nsPeekOffsetStruct* aPos) {
   // Adjusted so that the caret can't get confused when content changes
   nsIFrame* blockFrame = AdjustFrameForSelectionStyles(this);
+  Element* editingHost = blockFrame->GetContent()->GetEditingHost();
+
   int32_t thisLine;
   MOZ_TRY_VAR(thisLine,
               blockFrame->GetLineNumber(aPos->mScrollViewStop, &blockFrame));
@@ -8832,6 +8883,18 @@ nsresult nsIFrame::PeekOffsetForLineEdge(nsPeekOffsetStruct* aPos) {
   }
   if (!baseFrame) {
     return NS_ERROR_FAILURE;
+  }
+  // Make sure we are not leaving our inline editing host if exists
+  if (editingHost) {
+    if (nsIFrame* frame = editingHost->GetPrimaryFrame()) {
+      if (frame->IsInlineOutside() &&
+          !editingHost->Contains(baseFrame->GetContent())) {
+        baseFrame = frame;
+        if (endOfLine) {
+          baseFrame = baseFrame->LastContinuation();
+        }
+      }
+    }
   }
   FrameTarget targetFrame = DrillDownToSelectionFrame(baseFrame, endOfLine, 0);
   SetPeekResultFromFrame(*aPos, targetFrame.frame, endOfLine ? -1 : 0,
@@ -9462,7 +9525,7 @@ static void ComputeAndIncludeOutlineArea(nsIFrame* aFrame,
     }
   }
 
-  // Keep this code in sync with GetOutlineInnerRect in nsCSSRendering.cpp.
+  // Keep this code in sync with nsDisplayOutline::GetInnerRect.
   SetOrUpdateRectValuedProperty(aFrame, nsIFrame::OutlineInnerRectProperty(),
                                 innerRect);
   const nscoord offset = outline->mOutlineOffset.ToAppUnits();

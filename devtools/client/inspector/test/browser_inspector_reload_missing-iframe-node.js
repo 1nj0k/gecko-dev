@@ -39,13 +39,12 @@ add_task(async function() {
   );
 
   info("Select node inside iframe.");
-  const nodeFront = await getNodeFrontInFrame("#in-frame", "iframe", inspector);
-  await selectNode(nodeFront, inspector);
+  await selectNodeInFrames(["iframe", "#in-frame"], inspector);
 
   const markupLoaded = inspector.once("markuploaded");
 
   info("Reloading page.");
-  await testActor.eval("location.reload()");
+  await navigateTo(TEST_URI);
 
   info("Waiting for markupview to load after reload.");
   await markupLoaded;

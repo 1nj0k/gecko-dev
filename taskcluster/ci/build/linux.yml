@@ -89,6 +89,46 @@ linux64-plain/opt:
     optimization:
         skip-unless-expanded: null
 
+linux64-plain-clang-trunk/opt:
+    description: "Linux64 Opt Plain with clang trunk"
+    index:
+        product: firefox
+        job-name: linux64-plain-opt-ct
+    treeherder:
+        platform: linux64/opt
+        symbol: Bp-clang-trunk
+        tier: 2
+    worker-type: b-linux
+    worker:
+        docker-image: {in-tree: debian10-amd64-build}
+        max-run-time: 5400
+        env:
+            PERFHERDER_EXTRA_OPTIONS: plain-clang-trunk
+    run:
+        using: mozharness
+        actions: [build]
+        config:
+            - builds/releng_base_firefox.py
+            - builds/releng_base_linux_64_builds.py
+        script: mozharness/scripts/fx_desktop_build.py
+        tooltool-downloads: public
+        extra-config:
+            disable_package_metrics: true
+        mozconfig-variant: plain-opt-trunk
+    run-on-projects: []
+    fetches:
+        toolchain:
+            - linux64-binutils
+            - linux64-clang-trunk
+            - linux64-rust
+            - linux64-nasm
+            - linux64-node
+            - linux64-cbindgen
+            - linux64-dump-syms
+            - linux64-toolchain-sysroot
+    optimization:
+        skip-unless-expanded: null
+
 linux64-fuzzing/debug:
     description: "Linux64 Fuzzing Debug"
     index:
@@ -353,6 +393,8 @@ linux/opt:
     worker-type: b-linux
     worker:
         max-run-time: 7200
+        env:
+            MOZ_AUTOMATION_PACKAGE_TESTS: "1"
     run:
         using: mozharness
         actions: [get-secrets, build]
@@ -393,6 +435,8 @@ linux/debug:
     worker-type: b-linux
     worker:
         max-run-time: 5400
+        env:
+            MOZ_AUTOMATION_PACKAGE_TESTS: "1"
     run:
         using: mozharness
         actions: [get-secrets, build]
@@ -705,7 +749,7 @@ linux64-asan/opt:
     worker:
         env:
             PERFHERDER_EXTRA_OPTIONS: "opt asan"
-            ASAN_OPTIONS: "detect_leaks=0"
+            LSAN_OPTIONS: "verbosity=1:log_threads=1"
             MOZ_AUTOMATION_PACKAGE_TESTS: "1"
         max-run-time: 5400
     run:
@@ -749,6 +793,7 @@ linux64-tsan/opt:
     worker:
         env:
             PERFHERDER_EXTRA_OPTIONS: "opt tsan"
+            LSAN_OPTIONS: "verbosity=1:log_threads=1"
             MOZ_AUTOMATION_PACKAGE_TESTS: "1"
         max-run-time: 5400
     run:
@@ -843,7 +888,7 @@ linux64-asan-fuzzing/opt:
     worker:
         env:
             PERFHERDER_EXTRA_OPTIONS: asan-fuzzing
-            ASAN_OPTIONS: "detect_leaks=0"
+            LSAN_OPTIONS: "verbosity=1:log_threads=1"
             MOZ_AUTOMATION_PACKAGE_TESTS: "1"
         max-run-time: 5400
     run:
@@ -893,7 +938,7 @@ linux64-asan-fuzzing-ccov/opt:
     worker:
         env:
             PERFHERDER_EXTRA_OPTIONS: asan-fuzzing-ccov
-            ASAN_OPTIONS: "detect_leaks=0"
+            LSAN_OPTIONS: "verbosity=1:log_threads=1"
             MOZ_AUTOMATION_PACKAGE_TESTS: "1"
         max-run-time: 5400
     run:
@@ -941,7 +986,6 @@ linux64-fuzzing-ccov/opt:
         max-run-time: 5400
         env:
             PERFHERDER_EXTRA_OPTIONS: fuzzing-ccov
-            ASAN_OPTIONS: "detect_leaks=0"
             RUSTC_BOOTSTRAP: '1'
     run:
         using: mozharness
@@ -996,7 +1040,7 @@ linux64-asan-reporter-shippable/opt:
     worker:
         env:
             PERFHERDER_EXTRA_OPTIONS: asan-reporter
-            ASAN_OPTIONS: "detect_leaks=0"
+            LSAN_OPTIONS: "verbosity=1:log_threads=1"
             MOZ_AUTOMATION_PACKAGE_TESTS: "1"
         max-run-time: 3600
     run:
@@ -1043,7 +1087,7 @@ linux64-asan/debug:
     worker:
         env:
             PERFHERDER_EXTRA_OPTIONS: "debug asan"
-            ASAN_OPTIONS: "detect_leaks=0"
+            LSAN_OPTIONS: "verbosity=1:log_threads=1"
         max-run-time: 5400
     run:
         using: mozharness

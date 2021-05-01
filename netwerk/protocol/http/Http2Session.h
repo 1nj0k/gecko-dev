@@ -382,10 +382,10 @@ class Http2Session final : public ASpdySession,
   nsRefPtrHashtable<nsPtrHashKey<nsAHttpTransaction>, Http2Stream>
       mStreamTransactionHash;
 
-  nsDeque<Http2Stream> mReadyForWrite;
-  nsDeque<Http2Stream> mQueuedStreams;
-  nsDeque<Http2Stream> mPushesReadyForRead;
-  nsDeque<Http2Stream> mSlowConsumersReadyForRead;
+  nsTArray<WeakPtr<Http2Stream>> mReadyForWrite;
+  nsTArray<WeakPtr<Http2Stream>> mQueuedStreams;
+  nsTArray<WeakPtr<Http2Stream>> mPushesReadyForRead;
+  nsTArray<WeakPtr<Http2Stream>> mSlowConsumersReadyForRead;
   nsTArray<Http2PushedStream*> mPushedStreams;
 
   // Compression contexts for header transport.
@@ -561,7 +561,7 @@ class Http2Session final : public ASpdySession,
 
   nsTHashMap<nsCStringHashKey, bool> mJoinConnectionCache;
 
-  uint64_t mCurrentForegroundTabOuterContentWindowId;
+  uint64_t mCurrentTopBrowsingContextId;
 
   uint32_t mCntActivated;
 

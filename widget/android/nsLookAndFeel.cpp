@@ -77,11 +77,10 @@ void nsLookAndFeel::RefreshImpl() {
 
   mInitializedSystemColors = false;
   mInitializedShowPassword = false;
-  mPrefersReducedMotionCached = false;
-  mSystemUsesDarkThemeCached = false;
 }
 
-nsresult nsLookAndFeel::NativeGetColor(ColorID aID, nscolor& aColor) {
+nsresult nsLookAndFeel::NativeGetColor(ColorID aID, ColorScheme,
+                                       nscolor& aColor) {
   nsresult rv = NS_OK;
 
   EnsureInitSystemColors();
@@ -358,10 +357,6 @@ nsresult nsLookAndFeel::NativeGetInt(IntID aID, int32_t& aResult) {
       aResult = eScrollThumbStyle_Proportional;
       break;
 
-    case IntID::TouchEnabled:
-      aResult = 1;
-      break;
-
     case IntID::WindowsDefaultTheme:
     case IntID::WindowsThemeIdentifier:
     case IntID::OperatingSystemVersionIdentifier:
@@ -383,12 +378,7 @@ nsresult nsLookAndFeel::NativeGetInt(IntID aID, int32_t& aResult) {
       break;
 
     case IntID::PrefersReducedMotion:
-      if (!mPrefersReducedMotionCached && XRE_IsParentProcess()) {
-        mPrefersReducedMotion =
-            java::GeckoSystemStateListener::PrefersReducedMotion();
-        mPrefersReducedMotionCached = true;
-      }
-      aResult = mPrefersReducedMotion;
+      aResult = java::GeckoSystemStateListener::PrefersReducedMotion();
       break;
 
     case IntID::PrimaryPointerCapabilities:
@@ -399,21 +389,8 @@ nsresult nsLookAndFeel::NativeGetInt(IntID aID, int32_t& aResult) {
       break;
 
     case IntID::SystemUsesDarkTheme: {
-      if (!mSystemUsesDarkThemeCached && XRE_IsParentProcess()) {
-        // Bail out if AndroidBridge hasn't initialized since we try to query
-        // this value via nsMediaFeatures::InitSystemMetrics without
-        // initializing AndroidBridge on xpcshell tests.
-        if (!jni::IsAvailable()) {
-          return NS_ERROR_FAILURE;
-        }
-
-        java::GeckoRuntime::LocalRef runtime =
-            java::GeckoRuntime::GetInstance();
-        mSystemUsesDarkTheme = runtime && runtime->UsesDarkTheme();
-        mSystemUsesDarkThemeCached = true;
-      }
-
-      aResult = mSystemUsesDarkTheme;
+      java::GeckoRuntime::LocalRef runtime = java::GeckoRuntime::GetInstance();
+      aResult = runtime && runtime->UsesDarkTheme();
       break;
     }
 

@@ -357,7 +357,7 @@ class nsTextPaintStyle {
                                      float* aRelativeSize, uint8_t* aStyle);
 
   // if this returns false, we don't need to draw underline.
-  static bool GetSelectionUnderline(nsPresContext* aPresContext, int32_t aIndex,
+  static bool GetSelectionUnderline(nsIFrame*, int32_t aIndex,
                                     nscolor* aLineColor, float* aRelativeSize,
                                     uint8_t* aStyle);
 
@@ -2138,9 +2138,8 @@ static already_AddRefed<DrawTarget> CreateReferenceDrawTarget(
   return dt.forget();
 }
 
-static already_AddRefed<gfxTextRun> GetHyphenTextRun(const gfxTextRun* aTextRun,
-                                                     DrawTarget* aDrawTarget,
-                                                     nsTextFrame* aTextFrame) {
+static already_AddRefed<gfxTextRun> GetHyphenTextRun(nsTextFrame* aTextFrame,
+                                                     DrawTarget* aDrawTarget) {
   RefPtr<DrawTarget> dt = aDrawTarget;
   if (!dt) {
     dt = CreateReferenceDrawTarget(aTextFrame);
@@ -2149,8 +2148,10 @@ static already_AddRefed<gfxTextRun> GetHyphenTextRun(const gfxTextRun* aTextRun,
     }
   }
 
-  return aTextRun->GetFontGroup()->MakeHyphenTextRun(
-      dt, aTextRun->GetAppUnitsPerDevUnit());
+  RefPtr<nsFontMetrics> fm =
+      nsLayoutUtils::GetInflatedFontMetricsForFrame(aTextFrame);
+  return fm->GetThebesFontGroup()->MakeHyphenTextRun(
+      dt, aTextFrame->PresContext()->AppUnitsPerDevPixel());
 }
 
 already_AddRefed<gfxTextRun> BuildTextRunsScanner::BuildTextRunForFrames(
@@ -3836,10 +3837,18 @@ bool nsTextPaintStyle::EnsureSufficientContrast(nscolor* aForeColor,
   InitCommonColors();
 
   // If the combination of selection background color and frame background color
-  // is sufficient contrast, don't exchange the selection colors.
-  int32_t backLuminosityDifference =
+  // has sufficient contrast, don't exchange the selection colors.
+  //
+  // Note we use a different threshold here: mSufficientContrast is for contrast
+  // between text and background colors, but since we're diffing two
+  // backgrounds, we don't need that much contrast.  We match the heuristic from
+  // NS_SUFFICIENT_LUMINOSITY_DIFFERENCE_BG and use 20% of mSufficientContrast.
+  const int32_t minLuminosityDifferenceForBackground = mSufficientContrast / 5;
+  const int32_t backLuminosityDifference =
       NS_LUMINOSITY_DIFFERENCE(*aBackColor, mFrameBackgroundColor);
-  if (backLuminosityDifference >= mSufficientContrast) return false;
+  if (backLuminosityDifference >= minLuminosityDifferenceForBackground) {
+    return false;
+  }
 
   // Otherwise, we should use the higher-contrast color for the selection
   // background color.
@@ -3899,14 +3908,13 @@ void nsTextPaintStyle::GetHighlightColors(nscolor* aForeColor,
   }
 
   if (!customColors) {
-    nscolor backColor =
-        LookAndFeel::GetColor(LookAndFeel::ColorID::TextHighlightBackground);
-    nscolor foreColor =
-        LookAndFeel::GetColor(LookAndFeel::ColorID::TextHighlightForeground);
+    nscolor backColor = LookAndFeel::Color(
+        LookAndFeel::ColorID::TextHighlightBackground, mFrame);
+    nscolor foreColor = LookAndFeel::Color(
+        LookAndFeel::ColorID::TextHighlightForeground, mFrame);
     EnsureSufficientContrast(&foreColor, &backColor);
     *aForeColor = foreColor;
     *aBackColor = backColor;
-
     return;
   }
 
@@ -4023,7 +4031,9 @@ bool nsTextPaintStyle::GetSelectionUnderlineForPaint(int32_t aIndex,
 }
 
 void nsTextPaintStyle::InitCommonColors() {
-  if (mInitCommonColors) return;
+  if (mInitCommonColors) {
+    return;
+  }
 
   nsIFrame* bgFrame = nsCSSRendering::FindNonTransparentBackgroundFrame(mFrame);
   NS_ASSERTION(bgFrame, "Cannot find NonTransparentBackgroundFrame.");
@@ -4034,9 +4044,9 @@ void nsTextPaintStyle::InitCommonColors() {
   mFrameBackgroundColor = NS_ComposeColors(defaultBgColor, bgColor);
 
   mSystemFieldForegroundColor =
-      LookAndFeel::GetColor(LookAndFeel::ColorID::Fieldtext);
+      LookAndFeel::Color(LookAndFeel::ColorID::Fieldtext, mFrame);
   mSystemFieldBackgroundColor =
-      LookAndFeel::GetColor(LookAndFeel::ColorID::Field);
+      LookAndFeel::Color(LookAndFeel::ColorID::Field, mFrame);
 
   if (bgFrame->IsThemed()) {
     // Assume a native widget has sufficient contrast always
@@ -4049,11 +4059,11 @@ void nsTextPaintStyle::InitCommonColors() {
                "default background color is not opaque");
 
   nscolor defaultWindowBackgroundColor =
-      LookAndFeel::GetColor(LookAndFeel::ColorID::WindowBackground);
+      LookAndFeel::Color(LookAndFeel::ColorID::WindowBackground, mFrame);
   nscolor selectionTextColor =
-      LookAndFeel::GetColor(LookAndFeel::ColorID::TextSelectForeground);
+      LookAndFeel::Color(LookAndFeel::ColorID::TextSelectForeground, mFrame);
   nscolor selectionBGColor =
-      LookAndFeel::GetColor(LookAndFeel::ColorID::TextSelectBackground);
+      LookAndFeel::Color(LookAndFeel::ColorID::TextSelectBackground, mFrame);
 
   mSufficientContrast = std::min(
       std::min(NS_SUFFICIENT_LUMINOSITY_DIFFERENCE,
@@ -4101,12 +4111,12 @@ bool nsTextPaintStyle::InitSelectionColorsAndShadow() {
   }
 
   nscolor selectionBGColor =
-      LookAndFeel::GetColor(LookAndFeel::ColorID::TextSelectBackground);
+      LookAndFeel::Color(LookAndFeel::ColorID::TextSelectBackground, mFrame);
 
   switch (selectionStatus) {
     case nsISelectionController::SELECTION_ATTENTION: {
-      mSelectionBGColor = LookAndFeel::GetColor(
-          LookAndFeel::ColorID::TextSelectBackgroundAttention);
+      mSelectionBGColor = LookAndFeel::Color(
+          LookAndFeel::ColorID::TextSelectBackgroundAttention, mFrame);
       mSelectionBGColor =
           EnsureDifferentColors(mSelectionBGColor, selectionBGColor);
       break;
@@ -4116,8 +4126,8 @@ bool nsTextPaintStyle::InitSelectionColorsAndShadow() {
       break;
     }
     default: {
-      mSelectionBGColor = LookAndFeel::GetColor(
-          LookAndFeel::ColorID::TextSelectBackgroundDisabled);
+      mSelectionBGColor = LookAndFeel::Color(
+          LookAndFeel::ColorID::TextSelectBackgroundDisabled, mFrame);
       mSelectionBGColor =
           EnsureDifferentColors(mSelectionBGColor, selectionBGColor);
       break;
@@ -4125,7 +4135,7 @@ bool nsTextPaintStyle::InitSelectionColorsAndShadow() {
   }
 
   mSelectionTextColor =
-      LookAndFeel::GetColor(LookAndFeel::ColorID::TextSelectForeground);
+      LookAndFeel::Color(LookAndFeel::ColorID::TextSelectForeground, mFrame);
 
   if (mResolveColors) {
     // On MacOS X, only the background color gets set,
@@ -4145,8 +4155,8 @@ bool nsTextPaintStyle::InitSelectionColorsAndShadow() {
               : mFrame->GetVisitedDependentColor(
                     &nsStyleText::mWebkitTextFillColor);
       if (frameColor == mSelectionBGColor) {
-        mSelectionTextColor = LookAndFeel::GetColor(
-            LookAndFeel::ColorID::TextSelectForegroundCustom);
+        mSelectionTextColor = LookAndFeel::Color(
+            LookAndFeel::ColorID::TextSelectForegroundCustom, mFrame);
       }
     } else {
       EnsureSufficientContrast(&mSelectionTextColor, &mSelectionBGColor);
@@ -4207,12 +4217,12 @@ void nsTextPaintStyle::InitSelectionStyle(int32_t aIndex) {
   if (styleIDs->mForeground == LookAndFeel::ColorID::End) {
     foreColor = NS_SAME_AS_FOREGROUND_COLOR;
   } else {
-    foreColor = LookAndFeel::GetColor(styleIDs->mForeground);
+    foreColor = LookAndFeel::Color(styleIDs->mForeground, mFrame);
   }
   if (styleIDs->mBackground == LookAndFeel::ColorID::End) {
     backColor = NS_TRANSPARENT;
   } else {
-    backColor = LookAndFeel::GetColor(styleIDs->mBackground);
+    backColor = LookAndFeel::Color(styleIDs->mBackground, mFrame);
   }
 
   // Convert special color to actual color
@@ -4233,8 +4243,7 @@ void nsTextPaintStyle::InitSelectionStyle(int32_t aIndex) {
   nscolor lineColor;
   float relativeSize;
   uint8_t lineStyle;
-  GetSelectionUnderline(mPresContext, aIndex, &lineColor, &relativeSize,
-                        &lineStyle);
+  GetSelectionUnderline(mFrame, aIndex, &lineColor, &relativeSize, &lineStyle);
 
   if (mResolveColors)
     lineColor = GetResolvedForeColor(lineColor, foreColor, backColor);
@@ -4248,19 +4257,18 @@ void nsTextPaintStyle::InitSelectionStyle(int32_t aIndex) {
 }
 
 /* static */
-bool nsTextPaintStyle::GetSelectionUnderline(nsPresContext* aPresContext,
-                                             int32_t aIndex,
+bool nsTextPaintStyle::GetSelectionUnderline(nsIFrame* aFrame, int32_t aIndex,
                                              nscolor* aLineColor,
                                              float* aRelativeSize,
                                              uint8_t* aStyle) {
-  NS_ASSERTION(aPresContext, "aPresContext is null");
+  NS_ASSERTION(aFrame, "aFrame is null");
   NS_ASSERTION(aRelativeSize, "aRelativeSize is null");
   NS_ASSERTION(aStyle, "aStyle is null");
   NS_ASSERTION(aIndex >= 0 && aIndex < 5, "Index out of range");
 
   StyleIDs& styleID = SelectionStyleIDs[aIndex];
 
-  nscolor color = LookAndFeel::GetColor(styleID.mLine);
+  nscolor color = LookAndFeel::Color(styleID.mLine, aFrame);
   int32_t style = LookAndFeel::GetInt(styleID.mLineStyle);
   if (style > NS_STYLE_TEXT_DECORATION_STYLE_MAX) {
     NS_ERROR("Invalid underline style value is specified");
@@ -6056,14 +6064,12 @@ bool SelectionIterator::GetNextSegment(gfxFloat* aXOffset,
   return true;
 }
 
-static void AddHyphenToMetrics(nsTextFrame* aTextFrame,
-                               const gfxTextRun* aBaseTextRun,
+static void AddHyphenToMetrics(nsTextFrame* aTextFrame, bool aIsRightToLeft,
                                gfxTextRun::Metrics* aMetrics,
                                gfxFont::BoundingBoxType aBoundingBoxType,
                                DrawTarget* aDrawTarget) {
   // Fix up metrics to include hyphen
-  RefPtr<gfxTextRun> hyphenTextRun =
-      GetHyphenTextRun(aBaseTextRun, aDrawTarget, aTextFrame);
+  RefPtr<gfxTextRun> hyphenTextRun = GetHyphenTextRun(aTextFrame, aDrawTarget);
   if (!hyphenTextRun) {
     return;
   }
@@ -6073,7 +6079,7 @@ static void AddHyphenToMetrics(nsTextFrame* aTextFrame,
   if (aTextFrame->GetWritingMode().IsLineInverted()) {
     hyphenMetrics.mBoundingBox.y = -hyphenMetrics.mBoundingBox.YMost();
   }
-  aMetrics->CombineWith(hyphenMetrics, aBaseTextRun->IsRightToLeft());
+  aMetrics->CombineWith(hyphenMetrics, aIsRightToLeft);
 }
 
 void nsTextFrame::PaintOneShadow(const PaintShadowParams& aParams,
@@ -6695,7 +6701,7 @@ void nsTextFrame::PaintShadows(Span<const StyleSimpleShadow> aShadows,
     shadowMetrics.mBoundingBox.y = -shadowMetrics.mBoundingBox.YMost();
   }
   if (HasAnyStateBits(TEXT_HYPHEN_BREAK)) {
-    AddHyphenToMetrics(this, mTextRun, &shadowMetrics,
+    AddHyphenToMetrics(this, mTextRun->IsRightToLeft(), &shadowMetrics,
                        gfxFont::LOOSE_INK_EXTENTS,
                        aParams.context->GetDrawTarget());
   }
@@ -6935,8 +6941,7 @@ void nsTextFrame::DrawTextRun(Range aRange, const gfx::Point& aTextBaselinePt,
   if (aParams.drawSoftHyphen) {
     // Don't use ctx as the context, because we need a reference context here,
     // ctx may be transformed.
-    RefPtr<gfxTextRun> hyphenTextRun =
-        GetHyphenTextRun(mTextRun, nullptr, this);
+    RefPtr<gfxTextRun> hyphenTextRun = GetHyphenTextRun(this, nullptr);
     if (hyphenTextRun) {
       // For right-to-left text runs, the soft-hyphen is positioned at the left
       // of the text, minus its own width
@@ -7375,7 +7380,7 @@ bool nsTextFrame::CombineSelectionUnderlineRect(nsPresContext* aPresContext,
         sd->mSelectionType);
     if (sd->mSelectionType == SelectionType::eSpellCheck) {
       if (!nsTextPaintStyle::GetSelectionUnderline(
-              aPresContext, index, nullptr, &relativeSize, &params.style)) {
+              this, index, nullptr, &relativeSize, &params.style)) {
         continue;
       }
     } else {
@@ -7389,8 +7394,7 @@ bool nsTextFrame::CombineSelectionUnderlineRect(nsPresContext* aPresContext,
         params.style = ToStyleLineStyle(rangeStyle);
         relativeSize = rangeStyle.mIsBoldLine ? 2.0f : 1.0f;
       } else if (!nsTextPaintStyle::GetSelectionUnderline(
-                     aPresContext, index, nullptr, &relativeSize,
-                     &params.style)) {
+                     this, index, nullptr, &relativeSize, &params.style)) {
         continue;
       }
     }
@@ -7438,8 +7442,9 @@ bool nsTextFrame::IsFrameSelected() const {
     // Assert that the selection caching works.
     const bool isReallySelected =
         GetContent()->IsSelected(GetContentOffset(), GetContentEnd());
-    MOZ_ASSERT((mIsSelected == nsTextFrame::SelectionState::Selected) ==
-               isReallySelected);
+    NS_ASSERTION((mIsSelected == nsTextFrame::SelectionState::Selected) ==
+                     isReallySelected,
+                 "Should have called InvalidateSelectionState()");
 #endif
   }
 
@@ -9409,8 +9414,8 @@ void nsTextFrame::ReflowText(nsLineLayout& aLineLayout, nscoord aAvailableWidth,
   }
   if (usedHyphenation) {
     // Fix up metrics to include hyphen
-    AddHyphenToMetrics(this, mTextRun, &textMetrics, boundingBoxType,
-                       aDrawTarget);
+    AddHyphenToMetrics(this, mTextRun->IsRightToLeft(), &textMetrics,
+                       boundingBoxType, aDrawTarget);
     AddStateBits(TEXT_HYPHEN_BREAK | TEXT_HAS_NONCOLLAPSED_CHARACTERS);
   }
   if (textMetrics.mBoundingBox.IsEmpty()) {

@@ -47,7 +47,6 @@
 #include "nsGlobalWindowOuter.h"
 #include "nsHttpChannel.h"
 #include "nsHttpHandler.h"
-#include "nsIApplicationCacheChannel.h"
 #include "nsICacheInfoChannel.h"
 #include "nsICachingChannel.h"
 #include "nsIChannelEventSink.h"
@@ -179,7 +178,7 @@ HttpBaseChannel::HttpBaseChannel()
       mEncodedBodySize(0),
       mRequestContextID(0),
       mContentWindowId(0),
-      mTopLevelOuterContentWindowId(0),
+      mTopBrowsingContextId(0),
       mAltDataLength(-1),
       mChannelId(0),
       mReqContentLength(0U),
@@ -209,7 +208,6 @@ HttpBaseChannel::HttpBaseChannel()
       mCheckIsOpaqueResponseAllowedAfterSniff(false) {
   StoreApplyConversion(true);
   StoreAllowSTS(true);
-  StoreInheritApplicationCache(true);
   StoreTracingEnabled(true);
   StoreReportTiming(true);
   StoreAllowSpdy(true);
@@ -277,7 +275,6 @@ void HttpBaseChannel::ReleaseMainThreadOnlyReferences() {
   arrayToRelease.AppendElement(mLoadInfo.forget());
   arrayToRelease.AppendElement(mCallbacks.forget());
   arrayToRelease.AppendElement(mProgressSink.forget());
-  arrayToRelease.AppendElement(mApplicationCache.forget());
   arrayToRelease.AppendElement(mPrincipal.forget());
   arrayToRelease.AppendElement(mListener.forget());
   arrayToRelease.AppendElement(mCompressListener.forget());
@@ -1471,16 +1468,14 @@ NS_IMETHODIMP HttpBaseChannel::GetTopLevelContentWindowId(uint64_t* aWindowId) {
   return NS_OK;
 }
 
-NS_IMETHODIMP HttpBaseChannel::SetTopLevelOuterContentWindowId(
-    uint64_t aWindowId) {
-  mTopLevelOuterContentWindowId = aWindowId;
+NS_IMETHODIMP HttpBaseChannel::SetTopBrowsingContextId(uint64_t aId) {
+  mTopBrowsingContextId = aId;
   return NS_OK;
 }
 
-NS_IMETHODIMP HttpBaseChannel::GetTopLevelOuterContentWindowId(
-    uint64_t* aWindowId) {
-  EnsureTopLevelOuterContentWindowId();
-  *aWindowId = mTopLevelOuterContentWindowId;
+NS_IMETHODIMP HttpBaseChannel::GetTopBrowsingContextId(uint64_t* aId) {
+  EnsureTopBrowsingContextId();
+  *aId = mTopBrowsingContextId;
   return NS_OK;
 }
 
@@ -2258,6 +2253,10 @@ nsresult HttpBaseChannel::ProcessCrossOriginResourcePolicyHeader() {
     return NS_OK;
   }
 
+  if (mLoadInfo->GetLoadingPrincipal()->IsSystemPrincipal()) {
+    return NS_OK;
+  }
+
   nsAutoCString content;
   Unused << mResponseHead->GetHeader(nsHttp::Cross_Origin_Resource_Policy,
                                      content);
@@ -2374,7 +2373,7 @@ nsresult HttpBaseChannel::ComputeCrossOriginOpenerPolicyMismatch() {
   // If bc's popup sandboxing flag set is not empty and potentialCOOP is
   // non-null, then navigate bc to a network error and abort these steps.
   if (resultPolicy != nsILoadInfo::OPENER_POLICY_UNSAFE_NONE &&
-      GetHasNonEmptySandboxingFlag()) {
+      mLoadInfo->GetSandboxFlags()) {
     LOG((
         "HttpBaseChannel::ComputeCrossOriginOpenerPolicyMismatch network error "
         "for non empty sandboxing and non null COOP"));
@@ -4381,8 +4380,6 @@ nsresult HttpBaseChannel::SetupReplacementChannel(nsIURI* newURI,
     loadFlags &= ~INHIBIT_PERSISTENT_CACHING;
   }
 
-  // Do not pass along LOAD_CHECK_OFFLINE_CACHE
-  loadFlags &= ~nsICachingChannel::LOAD_CHECK_OFFLINE_CACHE;
   newChannel->SetLoadFlags(loadFlags);
 
   nsCOMPtr<nsIHttpChannel> httpChannel = do_QueryInterface(newChannel);
@@ -4459,8 +4456,7 @@ nsresult HttpBaseChannel::SetupReplacementChannel(nsIURI* newURI,
 
   // When on the parent process, the channel can't attempt to get it itself.
   // When on the child process, it would be waste to query it again.
-  rv = httpChannel->SetTopLevelOuterContentWindowId(
-      mTopLevelOuterContentWindowId);
+  rv = httpChannel->SetTopBrowsingContextId(mTopBrowsingContextId);
   MOZ_ASSERT(NS_SUCCEEDED(rv));
 
   // Not setting this flag would break carrying permissions down to the child
@@ -4540,15 +4536,6 @@ nsresult HttpBaseChannel::SetupReplacementChannel(nsIURI* newURI,
     if (LoadDisableAltDataCache()) {
       httpInternal->DisableAltDataCache();
     }
-  }
-
-  // transfer application cache information
-  nsCOMPtr<nsIApplicationCacheChannel> appCacheChannel =
-      do_QueryInterface(newChannel);
-  if (appCacheChannel) {
-    appCacheChannel->SetApplicationCache(mApplicationCache);
-    appCacheChannel->SetInheritApplicationCache(LoadInheritApplicationCache());
-    // We purposely avoid transfering ChooseApplicationCache.
   }
 
   // transfer any properties
@@ -5191,25 +5178,17 @@ bool HttpBaseChannel::EnsureRequestContext() {
   return true;
 }
 
-void HttpBaseChannel::EnsureTopLevelOuterContentWindowId() {
-  if (mTopLevelOuterContentWindowId) {
+void HttpBaseChannel::EnsureTopBrowsingContextId() {
+  if (mTopBrowsingContextId) {
     return;
   }
 
-  nsCOMPtr<nsILoadContext> loadContext;
-  GetCallback(loadContext);
-  if (!loadContext) {
-    return;
-  }
+  RefPtr<dom::BrowsingContext> bc;
+  MOZ_ALWAYS_SUCCEEDS(mLoadInfo->GetBrowsingContext(getter_AddRefs(bc)));
 
-  nsCOMPtr<mozIDOMWindowProxy> topWindow;
-  loadContext->GetTopWindow(getter_AddRefs(topWindow));
-  if (!topWindow) {
-    return;
+  if (bc && bc->Top()) {
+    mTopBrowsingContextId = bc->Top()->Id();
   }
-
-  mTopLevelOuterContentWindowId =
-      nsPIDOMWindowOuter::From(topWindow)->WindowID();
 }
 
 void HttpBaseChannel::InitiateORBTelemetry() {
@@ -5415,7 +5394,7 @@ HttpBaseChannel::GetNativeServerTiming(
     nsTArray<nsCOMPtr<nsIServerTiming>>& aServerTiming) {
   aServerTiming.Clear();
 
-  if (mURI->SchemeIs("https")) {
+  if (nsContentUtils::ComputeIsSecureContext(this)) {
     ParseServerTimingHeader(mResponseHead, aServerTiming);
     ParseServerTimingHeader(mResponseTrailers, aServerTiming);
   }

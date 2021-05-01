@@ -123,9 +123,12 @@ var UITour = {
           let id = UITour.protonEnabled
             ? "appMenu-fxa-label2"
             : "appMenu-fxa-label";
-          // Use the sync setup icon.
-          let statusButton = aDocument.getElementById(id);
-          return statusButton.icon;
+          let statusButton = PanelMultiView.getViewNode(aDocument, id);
+          if (!UITour.protonEnabled) {
+            // Use the sync setup icon.
+            return statusButton.querySelector(".toolbarbutton-icon");
+          }
+          return statusButton;
         },
         // This is a fake widgetName starting with the "appMenu-" prefix so we know
         // to automatically open the appMenu when annotating this target.
@@ -279,7 +282,7 @@ var UITour = {
     ],
   ]),
 
-  nonProtonURLBarTargets: [
+  nonProtonTargets: [
     [
       "pageAction-copyURL",
       {
@@ -347,8 +350,8 @@ var UITour = {
     );
 
     // Add non-proton targets if necessary.
-    if (!Services.prefs.getBoolPref("browser.proton.urlbar.enabled", false)) {
-      for (let [id, target] of this.nonProtonURLBarTargets) {
+    if (!UITour.protonEnabled) {
+      for (let [id, target] of this.nonProtonTargets) {
         this.targets.set(id, target);
       }
     }
@@ -1167,7 +1170,10 @@ var UITour = {
     let shouldOpenPageActionPanel = false;
     if (this.targetIsInAppMenu(aTarget)) {
       shouldOpenAppMenu = true;
-    } else if (this.targetIsInPageActionPanel(aTarget)) {
+    } else if (
+      this.targetIsInPageActionPanel(aTarget) &&
+      !UITour.protonEnabled
+    ) {
       shouldOpenPageActionPanel = true;
       // Ensure the panel visibility so as to ensure the visibility of the target
       // element inside the panel otherwise we would be rejected in the below
@@ -1570,7 +1576,10 @@ var UITour = {
       aMenuBtn.openMenu(true);
     }
 
-    if (aMenuName == "appMenu" || aMenuName == "pageActionPanel") {
+    if (
+      aMenuName == "appMenu" ||
+      (aMenuName == "pageActionPanel" && !UITour.protonEnabled)
+    ) {
       let menu = {
         onPanelHidden: this.onPanelHidden,
       };
@@ -1648,7 +1657,7 @@ var UITour = {
       closeMenuButton(menuBtn);
     } else if (aMenuName == "urlbar") {
       aWindow.gURLBar.view.close();
-    } else if (aMenuName == "pageActionPanel") {
+    } else if (aMenuName == "pageActionPanel" && !UITour.protonEnabled) {
       aWindow.BrowserPageActions.panelNode.hidePopup();
     }
   },

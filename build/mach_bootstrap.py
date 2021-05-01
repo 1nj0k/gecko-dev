@@ -8,6 +8,7 @@ import math
 import os
 import platform
 import shutil
+import site
 import sys
 
 if sys.version_info[0] < 3:
@@ -56,6 +57,7 @@ MACH_MODULES = [
     "python/mozperftest/mozperftest/mach_commands.py",
     "python/mozrelease/mozrelease/mach_commands.py",
     "remote/mach_commands.py",
+    "security/manager/tools/mach_commands.py",
     "taskcluster/mach_commands.py",
     "testing/awsy/mach_commands.py",
     "testing/condprofile/mach_commands.py",
@@ -181,10 +183,7 @@ def mach_sys_path(mozilla_dir):
     ]
 
 
-def bootstrap(topsrcdir, mozilla_dir=None):
-    if mozilla_dir is None:
-        mozilla_dir = topsrcdir
-
+def bootstrap(topsrcdir):
     # Ensure we are running Python 2.7 or 3.5+. We put this check here so we
     # generate a user-friendly error message rather than a cryptic stack trace
     # on module import.
@@ -201,6 +200,15 @@ def bootstrap(topsrcdir, mozilla_dir=None):
     if os.path.exists(deleted_dir):
         shutil.rmtree(deleted_dir, ignore_errors=True)
 
+    if major == 3 and sys.prefix == sys.base_prefix:
+        # We are not in a virtualenv. Remove global site packages
+        # from sys.path.
+        # Note that we don't ever invoke mach from a Python 2 virtualenv,
+        # and "sys.base_prefix" doesn't exist before Python 3.3, so we
+        # guard with the "major == 3" check.
+        site_paths = set(site.getsitepackages() + [site.getusersitepackages()])
+        sys.path = [path for path in sys.path if path not in site_paths]
+
     # Global build system and mach state is stored in a central directory. By
     # default, this is ~/.mozbuild. However, it can be defined via an
     # environment variable. We detect first run (by lack of this directory
@@ -209,7 +217,7 @@ def bootstrap(topsrcdir, mozilla_dir=None):
     # case. For default behavior, we educate users and give them an opportunity
     # to react. We always exit after creating the directory because users don't
     # like surprises.
-    sys.path[0:0] = mach_sys_path(mozilla_dir)
+    sys.path[0:0] = mach_sys_path(topsrcdir)
     import mach.base
     import mach.main
     from mach.util import setenv
@@ -267,7 +275,7 @@ def bootstrap(topsrcdir, mozilla_dir=None):
             # This API doesn't respect the vcs binary choices from configure.
             # If we ever need to use the VCS binary here, consider something
             # more robust.
-            return mozversioncontrol.get_repository_object(path=mozilla_dir)
+            return mozversioncontrol.get_repository_object(path=topsrcdir)
         except (mozversioncontrol.InvalidRepoPath, mozversioncontrol.MissingVCSTool):
             return None
 
@@ -370,20 +378,23 @@ def bootstrap(topsrcdir, mozilla_dir=None):
         # default global machrc location
         driver.settings_paths.append(get_state_dir())
     # always load local repository configuration
-    driver.settings_paths.append(mozilla_dir)
+    driver.settings_paths.append(topsrcdir)
 
     for category, meta in CATEGORIES.items():
         driver.define_category(category, meta["short"], meta["long"], meta["priority"])
 
+    # Sparse checkouts may not have all mach_commands.py files. Ignore
+    # errors from missing files. Same for spidermonkey tarballs.
     repo = resolve_repository()
+    missing_ok = (
+        repo is not None and repo.sparse_checkout_present()
+    ) or os.path.exists(os.path.join(topsrcdir, "INSTALL"))
 
     for path in MACH_MODULES:
-        # Sparse checkouts may not have all mach_commands.py files. Ignore
-        # errors from missing files.
         try:
-            driver.load_commands_from_file(os.path.join(mozilla_dir, path))
+            driver.load_commands_from_file(os.path.join(topsrcdir, path))
         except mach.base.MissingFileError:
-            if not repo or not repo.sparse_checkout_present():
+            if not missing_ok:
                 raise
 
     return driver
@@ -407,7 +418,9 @@ def _finalize_telemetry_glean(telemetry, is_bootstrap, success):
     mach_metrics.mach.duration.stop()
     mach_metrics.mach.success.set(success)
     system_metrics = mach_metrics.mach.system
-    system_metrics.cpu_brand.set(get_cpu_brand())
+    cpu_brand = get_cpu_brand()
+    if cpu_brand:
+        system_metrics.cpu_brand.set(cpu_brand)
     distro, version = get_distro_and_version()
     system_metrics.distro.set(distro)
     system_metrics.distro_version.set(version)

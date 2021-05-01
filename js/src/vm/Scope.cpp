@@ -1795,10 +1795,18 @@ void BaseAbstractBindingIter<NameT>::init(
   if (flags & IsNamedLambda) {
     // Named lambda binding is weird. Normal BindingKind ordering rules
     // don't apply.
-    init(0, 0, 0, 0, 0, data.length, data.length,
-         CanHaveEnvironmentSlots | flags, firstFrameSlot,
+    init(/* positionalFormalStart= */ 0,
+         /* nonPositionalFormalStart= */ 0,
+         /* varStart= */ 0,
+         /* letStart= */ 0,
+         /* constStart= */ 0,
+         /* syntheticStart= */ data.length,
+         /* privageMethodStart= */ data.length,
+         /* flags= */ CanHaveEnvironmentSlots | flags,
+         /* firstFrameSlot= */ firstFrameSlot,
+         /* firstEnvironmentSlot= */
          JSSLOT_FREE(&LexicalEnvironmentObject::class_),
-         GetScopeDataTrailingNames(&data));
+         /* names= */ GetScopeDataTrailingNames(&data));
   } else {
     //            imports - [0, 0)
     // positional formals - [0, 0)
@@ -1807,11 +1815,19 @@ void BaseAbstractBindingIter<NameT>::init(
     //               lets - [0, slotInfo.constStart)
     //             consts - [slotInfo.constStart, data.length)
     //          synthetic - [data.length, data.length)
-    //    private methods - [slotInfo.length, slotInfo.length)
-    init(0, 0, 0, 0, slotInfo.constStart, data.length, data.length,
-         CanHaveFrameSlots | CanHaveEnvironmentSlots | flags, firstFrameSlot,
+    //    private methods - [data.length, data.length)
+    init(/* positionalFormalStart= */ 0,
+         /* nonPositionalFormalStart= */ 0,
+         /* varStart= */ 0,
+         /* letStart= */ 0,
+         /* constStart= */ slotInfo.constStart,
+         /* syntheticStart= */ data.length,
+         /* privateMethodStart= */ data.length,
+         /* flags= */ CanHaveFrameSlots | CanHaveEnvironmentSlots | flags,
+         /* firstFrameSlot= */ firstFrameSlot,
+         /* firstEnvironmentSlot= */
          JSSLOT_FREE(&LexicalEnvironmentObject::class_),
-         GetScopeDataTrailingNames(&data));
+         /* names= */ GetScopeDataTrailingNames(&data));
   }
 }
 
@@ -1834,10 +1850,18 @@ void BaseAbstractBindingIter<NameT>::init(
   //             consts - [0, 0)
   //          synthetic - [0, slotInfo.privateMethodStart)
   //    private methods - [slotInfo.privateMethodStart, data.length)
-  init(0, 0, 0, 0, 0, 0, slotInfo.privateMethodStart,
-       CanHaveFrameSlots | CanHaveEnvironmentSlots, firstFrameSlot,
+  init(/* positionalFormalStart= */ 0,
+       /* nonPositionalFormalStart= */ 0,
+       /* varStart= */ 0,
+       /* letStart= */ 0,
+       /* constStart= */ 0,
+       /* syntheticStart= */ 0,
+       /* privateMethodStart= */ slotInfo.privateMethodStart,
+       /* flags= */ CanHaveFrameSlots | CanHaveEnvironmentSlots,
+       /* firstFrameSlot= */ firstFrameSlot,
+       /* firstEnvironmentSlot= */
        JSSLOT_FREE(&ClassBodyLexicalEnvironmentObject::class_),
-       GetScopeDataTrailingNames(&data));
+       /* names= */ GetScopeDataTrailingNames(&data));
 }
 
 template void BaseAbstractBindingIter<JSAtom>::init(
@@ -1864,9 +1888,17 @@ void BaseAbstractBindingIter<NameT>::init(
   //             consts - [length, length)
   //          synthetic - [length, length)
   //    private methods - [length, length)
-  init(0, slotInfo.nonPositionalFormalStart, slotInfo.varStart, length, length,
-       length, length, flags, 0, JSSLOT_FREE(&CallObject::class_),
-       GetScopeDataTrailingNames(&data));
+  init(/* positionalFormalStart= */ 0,
+       /* nonPositionalFormalStart= */ slotInfo.nonPositionalFormalStart,
+       /* varStart= */ slotInfo.varStart,
+       /* letStart= */ length,
+       /* constStart= */ length,
+       /* syntheticStart= */ length,
+       /* privateMethodStart= */ length,
+       /* flags= */ flags,
+       /* firstFrameSlot= */ 0,
+       /* firstEnvironmentSlot= */ JSSLOT_FREE(&CallObject::class_),
+       /* names= */ GetScopeDataTrailingNames(&data));
 }
 template void BaseAbstractBindingIter<JSAtom>::init(
     FunctionScope::AbstractData<JSAtom>&, uint8_t);
@@ -1886,10 +1918,17 @@ void BaseAbstractBindingIter<NameT>::init(VarScope::AbstractData<NameT>& data,
   //             consts - [length, length)
   //          synthetic - [length, length)
   //    private methods - [length, length)
-  init(0, 0, 0, length, length, length, length,
-       CanHaveFrameSlots | CanHaveEnvironmentSlots, firstFrameSlot,
-       JSSLOT_FREE(&VarEnvironmentObject::class_),
-       GetScopeDataTrailingNames(&data));
+  init(/* positionalFormalStart= */ 0,
+       /* nonPositionalFormalStart= */ 0,
+       /* varStart= */ 0,
+       /* letStart= */ length,
+       /* constStart= */ length,
+       /* syntheticStart= */ length,
+       /* privateMethodStart= */ length,
+       /* flags= */ CanHaveFrameSlots | CanHaveEnvironmentSlots,
+       /* firstFrameSlot= */ firstFrameSlot,
+       /* firstEnvironmentSlot= */ JSSLOT_FREE(&VarEnvironmentObject::class_),
+       /* names= */ GetScopeDataTrailingNames(&data));
 }
 template void BaseAbstractBindingIter<JSAtom>::init(
     VarScope::AbstractData<JSAtom>&, uint32_t);
@@ -1909,9 +1948,17 @@ void BaseAbstractBindingIter<NameT>::init(
   //             consts - [slotInfo.constStart, data.length)
   //          synthetic - [data.length, data.length)
   //    private methods - [data.length, data.length)
-  init(0, 0, 0, slotInfo.letStart, slotInfo.constStart, data.length,
-       data.length, CannotHaveSlots, UINT32_MAX, UINT32_MAX,
-       GetScopeDataTrailingNames(&data));
+  init(/* positionalFormalStart= */ 0,
+       /* nonPositionalFormalStart= */ 0,
+       /* varStart= */ 0,
+       /* letStart= */ slotInfo.letStart,
+       /* constStart= */ slotInfo.constStart,
+       /* syntheticStart= */ data.length,
+       /* privateMethoodStart= */ data.length,
+       /* flags= */ CannotHaveSlots,
+       /* firstFrameSlot= */ UINT32_MAX,
+       /* firstEnvironmentSlot= */ UINT32_MAX,
+       /* names= */ GetScopeDataTrailingNames(&data));
 }
 template void BaseAbstractBindingIter<JSAtom>::init(
     GlobalScope::AbstractData<JSAtom>&);
@@ -1944,8 +1991,17 @@ void BaseAbstractBindingIter<NameT>::init(EvalScope::AbstractData<NameT>& data,
   //             consts - [length, length)
   //          synthetic - [length, length)
   //    private methods - [length, length)
-  init(0, 0, 0, length, length, length, length, flags, firstFrameSlot,
-       firstEnvironmentSlot, GetScopeDataTrailingNames(&data));
+  init(/* positionalFormalStart= */ 0,
+       /* nonPositionalFormalStart= */ 0,
+       /* varStart= */ 0,
+       /* letStart= */ length,
+       /* constStart= */ length,
+       /* syntheticStart= */ length,
+       /* privateMethodStart= */ length,
+       /* flags= */ flags,
+       /* firstFrameSlot= */ firstFrameSlot,
+       /* firstEnvironmentSlot= */ firstEnvironmentSlot,
+       /* names= */ GetScopeDataTrailingNames(&data));
 }
 template void BaseAbstractBindingIter<JSAtom>::init(
     EvalScope::AbstractData<JSAtom>&, bool);
@@ -1965,11 +2021,18 @@ void BaseAbstractBindingIter<NameT>::init(
   //             consts - [slotInfo.constStart, data.length)
   //          synthetic - [data.length, data.length)
   //    private methods - [data.length, data.length)
-  init(slotInfo.varStart, slotInfo.varStart, slotInfo.varStart,
-       slotInfo.letStart, slotInfo.constStart, data.length, data.length,
-       CanHaveFrameSlots | CanHaveEnvironmentSlots, 0,
-       JSSLOT_FREE(&ModuleEnvironmentObject::class_),
-       GetScopeDataTrailingNames(&data));
+  init(
+      /* positionalFormalStart= */ slotInfo.varStart,
+      /* nonPositionalFormalStart= */ slotInfo.varStart,
+      /* varStart= */ slotInfo.varStart,
+      /* letStart= */ slotInfo.letStart,
+      /* constStart= */ slotInfo.constStart,
+      /* syntheticStart= */ data.length,
+      /* privateMethodStart= */ data.length,
+      /* flags= */ CanHaveFrameSlots | CanHaveEnvironmentSlots,
+      /* firstFrameSlot= */ 0,
+      /* firstEnvironmentSlot= */ JSSLOT_FREE(&ModuleEnvironmentObject::class_),
+      /* names= */ GetScopeDataTrailingNames(&data));
 }
 template void BaseAbstractBindingIter<JSAtom>::init(
     ModuleScope::AbstractData<JSAtom>&);
@@ -1989,9 +2052,17 @@ void BaseAbstractBindingIter<NameT>::init(
   //             consts - [length, length)
   //          synthetic - [length, length)
   //    private methods - [length, length)
-  init(0, 0, 0, length, length, length, length,
-       CanHaveFrameSlots | CanHaveEnvironmentSlots, UINT32_MAX, UINT32_MAX,
-       GetScopeDataTrailingNames(&data));
+  init(/* positionalFormalStart= */ 0,
+       /* nonPositionalFormalStart= */ 0,
+       /* varStart= */ 0,
+       /* letStart= */ length,
+       /* constStart= */ length,
+       /* syntheticStart= */ length,
+       /* privateMethodStart= */ length,
+       /* flags= */ CanHaveFrameSlots | CanHaveEnvironmentSlots,
+       /* firstFrameSlot= */ UINT32_MAX,
+       /* firstEnvironmentSlot= */ UINT32_MAX,
+       /* names= */ GetScopeDataTrailingNames(&data));
 }
 template void BaseAbstractBindingIter<JSAtom>::init(
     WasmInstanceScope::AbstractData<JSAtom>&);
@@ -2011,9 +2082,17 @@ void BaseAbstractBindingIter<NameT>::init(
   //             consts - [length, length)
   //          synthetic - [length, length)
   //    private methods - [length, length)
-  init(0, 0, 0, length, length, length, length,
-       CanHaveFrameSlots | CanHaveEnvironmentSlots, UINT32_MAX, UINT32_MAX,
-       GetScopeDataTrailingNames(&data));
+  init(/* positionalFormalStart = */ 0,
+       /* nonPositionalFormalStart = */ 0,
+       /* varStart= */ 0,
+       /* letStart= */ length,
+       /* constStart= */ length,
+       /* syntheticStart= */ length,
+       /* privateMethodStart= */ length,
+       /* flags= */ CanHaveFrameSlots | CanHaveEnvironmentSlots,
+       /* firstFrameSlot= */ UINT32_MAX,
+       /* firstEnvironmentSlot= */ UINT32_MAX,
+       /* names= */ GetScopeDataTrailingNames(&data));
 }
 template void BaseAbstractBindingIter<JSAtom>::init(
     WasmFunctionScope::AbstractData<JSAtom>&);

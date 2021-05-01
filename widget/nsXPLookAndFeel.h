@@ -31,8 +31,7 @@ class nsXPLookAndFeel : public mozilla::LookAndFeel {
   //
   // NS_ERROR_NOT_AVAILABLE is returned if there is neither an override pref or
   // a platform-specific value.
-  nsresult GetColorValue(ColorID aID, bool aUseStandinsForNativeColors,
-                         nscolor& aResult);
+  nsresult GetColorValue(ColorID, ColorScheme, UseStandins, nscolor& aResult);
   nsresult GetIntValue(IntID aID, int32_t& aResult);
   nsresult GetFloatValue(FloatID aID, float& aResult);
   // Same, but returns false if there is no platform-specific value.
@@ -41,7 +40,7 @@ class nsXPLookAndFeel : public mozilla::LookAndFeel {
 
   virtual nsresult NativeGetInt(IntID aID, int32_t& aResult) = 0;
   virtual nsresult NativeGetFloat(FloatID aID, float& aResult) = 0;
-  virtual nsresult NativeGetColor(ColorID aID, nscolor& aResult) = 0;
+  virtual nsresult NativeGetColor(ColorID, ColorScheme, nscolor& aResult) = 0;
   virtual bool NativeGetFont(FontID aID, nsString& aName,
                              gfxFontStyle& aStyle) = 0;
 
@@ -62,25 +61,7 @@ class nsXPLookAndFeel : public mozilla::LookAndFeel {
 
   virtual void NativeInit() = 0;
 
-  virtual void WithThemeConfiguredForContent(
-      const std::function<void(const LookAndFeelTheme&, bool aChanged)>& aFn) {
-    aFn(LookAndFeelTheme{}, false);
-  }
-
-  // Whether the color should be from the parent theme, if the theme differs
-  // between parent and content processes.
-  virtual bool FromParentTheme(IntID) {
-    MOZ_ASSERT_UNREACHABLE(
-        "Should override if WithThemeConfiguredForContent can change the "
-        "theme");
-    return false;
-  }
-  virtual bool FromParentTheme(ColorID) {
-    MOZ_ASSERT_UNREACHABLE(
-        "Should override if WithThemeConfiguredForContent can change the "
-        "theme");
-    return false;
-  }
+  virtual void GetGtkContentTheme(LookAndFeelTheme&) {}
 
  protected:
   nsXPLookAndFeel() = default;

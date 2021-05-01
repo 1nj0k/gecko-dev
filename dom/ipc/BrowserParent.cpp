@@ -45,7 +45,6 @@
 #include "mozilla/layers/AsyncDragMetrics.h"
 #include "mozilla/layers/InputAPZContext.h"
 #include "mozilla/layout/RemoteLayerTreeOwner.h"
-#include "mozilla/plugins/PPluginWidgetParent.h"
 #include "mozilla/LookAndFeel.h"
 #include "mozilla/MiscEvents.h"
 #include "mozilla/MouseEvents.h"
@@ -135,7 +134,6 @@
 #include "VsyncSource.h"
 
 #ifdef XP_WIN
-#  include "mozilla/plugins/PluginWidgetParent.h"
 #  include "FxRWindowManager.h"
 #endif
 
@@ -158,7 +156,6 @@ using namespace mozilla::widget;
 using namespace mozilla::gfx;
 
 using mozilla::LazyLogModule;
-using mozilla::StaticAutoPtr;
 using mozilla::Unused;
 
 LazyLogModule gBrowserFocusLog("BrowserFocus");
@@ -221,11 +218,6 @@ BrowserParent::BrowserParent(ContentParent* aManager, const TabId& aTabId,
       mChromeOffset{},
       mCreatingWindow(false),
       mDelayedFrameScripts{},
-      mCursor(eCursorInvalid),
-      mCustomCursor{},
-      mCustomCursorHotspotX(0),
-      mCustomCursorHotspotY(0),
-      mVerifyDropLinks{},
       mVsyncParent(nullptr),
       mMarkedDestroying(false),
       mIsDestroyed(false),
@@ -236,7 +228,8 @@ BrowserParent::BrowserParent(ContentParent* aManager, const TabId& aTabId,
       mHasLayers(false),
       mHasPresented(false),
       mIsReadyToHandleInputEvents(false),
-      mIsMouseEnterIntoWidgetEventSuppressed(false) {
+      mIsMouseEnterIntoWidgetEventSuppressed(false),
+      mLockedNativePointer(false) {
   MOZ_ASSERT(aManager);
   // When the input event queue is disabled, we don't need to handle the case
   // that some input events are dispatched before PBrowserConstructor.
@@ -539,17 +532,6 @@ void BrowserParent::SetOwnerElement(Element* aElement) {
   AddWindowListeners();
   TryCacheDPIAndScale();
 
-  // Try to send down WidgetNativeData, now that this BrowserParent is
-  // associated with a widget.
-  nsCOMPtr<nsIWidget> widget = GetTopLevelWidget();
-  if (widget) {
-    WindowsHandle widgetNativeData = reinterpret_cast<WindowsHandle>(
-        widget->GetNativeData(NS_NATIVE_SHAREABLE_WINDOW));
-    if (widgetNativeData) {
-      Unused << SendSetWidgetNativeData(widgetNativeData);
-    }
-  }
-
   if (mRemoteLayerTreeOwner.IsInitialized()) {
     mRemoteLayerTreeOwner.OwnerContentChanged();
   }
@@ -601,11 +583,13 @@ void BrowserParent::RemoveWindowListeners() {
 }
 
 void BrowserParent::Deactivated() {
+  UnlockNativePointer();
   UnsetTopLevelWebFocus(this);
   UnsetLastMouseRemoteTarget(this);
   PointerLockManager::ReleaseLockedRemoteTarget(this);
   PointerEventHandler::ReleasePointerCaptureRemoteTarget(this);
   PresShell::ReleaseCapturingRemoteTarget(this);
+  ProcessPriorityManager::ActivityChanged(this, /* aIsActive = */ false);
 }
 
 void BrowserParent::DestroyInternal() {
@@ -623,17 +607,6 @@ void BrowserParent::DestroyInternal() {
   // and auto-cleanup will kick in.  Otherwise, the child side will
   // destroy itself and send back __delete__().
   Unused << SendDestroy();
-
-#ifdef XP_WIN
-  // Let all PluginWidgets know we are tearing down. Prevents
-  // these objects from sending async events after the child side
-  // is shut down.
-  const ManagedContainer<PPluginWidgetParent>& kids =
-      ManagedPPluginWidgetParent();
-  for (const auto& key : kids) {
-    static_cast<mozilla::plugins::PluginWidgetParent*>(key)->ParentDestroy();
-  }
-#endif
 }
 
 void BrowserParent::Destroy() {
@@ -738,25 +711,12 @@ void BrowserParent::ActorDestroy(ActorDestroyReason why) {
     if (why == AbnormalShutdown) {
       frameLoader->MaybeNotifyCrashed(mBrowsingContext, Manager()->ChildID(),
                                       GetIPCChannel());
-
-      auto* bridge = GetBrowserBridgeParent();
-      if (bridge && bridge->CanSend() && !mBrowsingContext->IsDiscarded()) {
-        MOZ_ASSERT(!mBrowsingContext->IsTop());
-
-        // Set the owner process of the root context belonging to a crashed
-        // process to the embedding process, since we'll be showing the crashed
-        // page in that process.
-        mBrowsingContext->SetOwnerProcessId(
-            bridge->Manager()->Manager()->ChildID());
-        MOZ_ALWAYS_SUCCEEDS(mBrowsingContext->SetCurrentInnerWindowId(0));
-
-        // Tell the browser bridge to show the subframe crashed page.
-        Unused << bridge->SendSubFrameCrashed();
-      }
     }
   }
 
   mFrameLoader = nullptr;
+
+  mBrowsingContext->BrowserParentDestroyed(this, why == AbnormalShutdown);
 }
 
 mozilla::ipc::IPCResult BrowserParent::RecvMoveFocus(
@@ -1108,6 +1068,7 @@ void BrowserParent::UpdateDimensions(const nsIntRect& rect,
     mChromeOffset = chromeOffset;
 
     Unused << SendUpdateDimensions(GetDimensionInfo());
+    UpdateNativePointerLockCenter(widget);
   }
 }
 
@@ -1126,6 +1087,17 @@ DimensionInfo BrowserParent::GetDimensionInfo() {
   DimensionInfo di(unscaledRect, unscaledSize, mOrientation, mClientOffset,
                    mChromeOffset);
   return di;
+}
+
+void BrowserParent::UpdateNativePointerLockCenter(nsIWidget* aWidget) {
+  if (!mLockedNativePointer) {
+    return;
+  }
+  LayoutDeviceIntRect dims(
+      {0, 0},
+      ViewAs<LayoutDevicePixel>(
+          mDimensions, PixelCastJustification::LayoutDeviceIsScreenForTabDims));
+  aWidget->SetNativePointerLockCenter((dims + mChromeOffset).Center());
 }
 
 void BrowserParent::SizeModeChanged(const nsSizeMode& aSizeMode) {
@@ -1161,7 +1133,7 @@ void BrowserParent::HandleAccessKey(const WidgetKeyboardEvent& aEvent,
 }
 
 void BrowserParent::Activate(uint64_t aActionId) {
-  LOGBROWSERFOCUS(("Activate %p", this));
+  LOGBROWSERFOCUS(("Activate %p actionid: %" PRIu64, this, aActionId));
   if (!mIsDestroyed) {
     SetTopLevelWebFocus(this);  // Intentionally inside "if"
     Unused << SendActivate(aActionId);
@@ -1169,7 +1141,7 @@ void BrowserParent::Activate(uint64_t aActionId) {
 }
 
 void BrowserParent::Deactivate(bool aWindowLowering, uint64_t aActionId) {
-  LOGBROWSERFOCUS(("Deactivate %p", this));
+  LOGBROWSERFOCUS(("Deactivate %p actionid: %" PRIu64, this, aActionId));
   if (!aWindowLowering) {
     UnsetTopLevelWebFocus(this);  // Intentionally outside the next "if"
   }
@@ -1354,6 +1326,28 @@ IPCResult BrowserParent::RecvNewWindowGlobal(
     return IPC_FAIL(this, "Cannot create without valid principal");
   }
 
+  // Ensure we never load a document with a content principal in
+  // the wrong type of webIsolated process
+  EnumSet<ContentParent::ValidatePrincipalOptions> validationOptions = {};
+  nsCOMPtr<nsIURI> docURI = aInit.documentURI();
+  if (docURI->SchemeIs("about") || docURI->SchemeIs("blob") ||
+      docURI->SchemeIs("chrome")) {
+    // XXXckerschb TODO - Do not use SystemPrincipal for:
+    // Bug 1700639: about:plugins
+    // Bug 1699385: Remove allowSystem for blobs
+    // Bug 1698087: chrome://devtools/content/shared/webextension-fallback.html
+    // chrome reftests, e.g.
+    //   * chrome://reftest/content/writing-mode/ua-style-sheet-button-1a-ref.html
+    //   * chrome://reftest/content/xul-document-load/test003.xhtml
+    //   * chrome://reftest/content/forms/input/text/centering-1.xhtml
+    validationOptions = {ContentParent::ValidatePrincipalOptions::AllowSystem};
+  }
+
+  if (!mManager->ValidatePrincipal(aInit.principal(), validationOptions)) {
+    ContentParent::LogAndAssertFailedPrincipalValidationInfo(aInit.principal(),
+                                                             __func__);
+  }
+
   // Construct our new WindowGlobalParent, bind, and initialize it.
   RefPtr<WindowGlobalParent> wgp =
       WindowGlobalParent::CreateDisconnected(aInit);
@@ -1395,15 +1389,11 @@ void BrowserParent::SendMouseEvent(const nsAString& aType, float aX, float aY,
 }
 
 void BrowserParent::MouseEnterIntoWidget() {
-  nsCOMPtr<nsIWidget> widget = GetWidget();
-  if (widget) {
+  if (nsCOMPtr<nsIWidget> widget = GetWidget()) {
     // When we mouseenter the remote target, the remote target's cursor should
     // become the current cursor.  When we mouseexit, we stop.
     mRemoteTargetSetsCursor = true;
-    if (mCursor != eCursorInvalid) {
-      widget->SetCursor(mCursor, mCustomCursor, mCustomCursorHotspotX,
-                        mCustomCursorHotspotY);
-    }
+    widget->SetCursor(mCursor);
   }
 
   // Mark that we have missed a mouse enter event, so that
@@ -1442,10 +1432,7 @@ void BrowserParent::SendRealMouseEvent(WidgetMouseEvent& aEvent) {
     // become the current cursor.  When we mouseexit, we stop.
     if (eMouseEnterIntoWidget == aEvent.mMessage) {
       mRemoteTargetSetsCursor = true;
-      if (mCursor != eCursorInvalid) {
-        widget->SetCursor(mCursor, mCustomCursor, mCustomCursorHotspotX,
-                          mCustomCursorHotspotY);
-      }
+      widget->SetCursor(mCursor);
     } else if (eMouseExitFromWidget == aEvent.mMessage) {
       mRemoteTargetSetsCursor = false;
     }
@@ -1687,6 +1674,25 @@ mozilla::ipc::IPCResult BrowserParent::RecvDispatchKeyboardEvent(
   return IPC_OK();
 }
 
+mozilla::ipc::IPCResult BrowserParent::RecvDispatchTouchEvent(
+    const mozilla::WidgetTouchEvent& aEvent) {
+  nsCOMPtr<nsIWidget> widget = GetWidget();
+  if (!widget) {
+    return IPC_OK();
+  }
+
+  WidgetTouchEvent localEvent(aEvent);
+  localEvent.mWidget = widget;
+
+  for (uint32_t i = 0; i < localEvent.mTouches.Length(); i++) {
+    localEvent.mTouches[i]->mRefPoint =
+        TransformChildToParent(localEvent.mTouches[i]->mRefPoint);
+  }
+
+  widget->DispatchInputEvent(&localEvent);
+  return IPC_OK();
+}
+
 mozilla::ipc::IPCResult BrowserParent::RecvRequestNativeKeyBindings(
     const uint32_t& aType, const WidgetKeyboardEvent& aEvent,
     nsTArray<CommandInt>* aCommands) {
@@ -1911,6 +1917,30 @@ mozilla::ipc::IPCResult BrowserParent::RecvSynthesizeNativeTouchpadDoubleTap(
   if (widget) {
     widget->SynthesizeNativeTouchpadDoubleTap(aPoint, aModifierFlags);
   }
+  return IPC_OK();
+}
+
+mozilla::ipc::IPCResult BrowserParent::RecvLockNativePointer() {
+  if (nsCOMPtr<nsIWidget> widget = GetWidget()) {
+    mLockedNativePointer = true;  // do before updating the center
+    UpdateNativePointerLockCenter(widget);
+    widget->LockNativePointer();
+  }
+  return IPC_OK();
+}
+
+void BrowserParent::UnlockNativePointer() {
+  if (!mLockedNativePointer) {
+    return;
+  }
+  if (nsCOMPtr<nsIWidget> widget = GetWidget()) {
+    widget->UnlockNativePointer();
+    mLockedNativePointer = false;
+  }
+}
+
+mozilla::ipc::IPCResult BrowserParent::RecvUnlockNativePointer() {
+  UnlockNativePointer();
   return IPC_OK();
 }
 
@@ -2153,7 +2183,7 @@ mozilla::ipc::IPCResult BrowserParent::RecvAsyncMessage(
 mozilla::ipc::IPCResult BrowserParent::RecvSetCursor(
     const nsCursor& aCursor, const bool& aHasCustomCursor,
     const nsCString& aCursorData, const uint32_t& aWidth,
-    const uint32_t& aHeight, const uint32_t& aStride,
+    const uint32_t& aHeight, const float& aResolution, const uint32_t& aStride,
     const gfx::SurfaceFormat& aFormat, const uint32_t& aHotspotX,
     const uint32_t& aHotspotY, const bool& aForce) {
   nsCOMPtr<nsIWidget> widget = GetWidget();
@@ -2182,16 +2212,13 @@ mozilla::ipc::IPCResult BrowserParent::RecvSetCursor(
     cursorImage = image::ImageOps::CreateFromDrawable(drawable);
   }
 
-  mCursor = aCursor;
-  mCustomCursor = cursorImage;
-  mCustomCursorHotspotX = aHotspotX;
-  mCustomCursorHotspotY = aHotspotY;
-
+  mCursor = nsIWidget::Cursor{aCursor, std::move(cursorImage), aHotspotX,
+                              aHotspotY, aResolution};
   if (!mRemoteTargetSetsCursor) {
     return IPC_OK();
   }
 
-  widget->SetCursor(aCursor, cursorImage, aHotspotX, aHotspotY);
+  widget->SetCursor(mCursor);
   return IPC_OK();
 }
 
@@ -2464,7 +2491,14 @@ BrowserParent::GetChildToParentConversionMatrix() {
 void BrowserParent::SetChildToParentConversionMatrix(
     const Maybe<LayoutDeviceToLayoutDeviceMatrix4x4>& aMatrix,
     const ScreenRect& aRemoteDocumentRect) {
+  if (mChildToParentConversionMatrix == aMatrix &&
+      mRemoteDocumentRect.isSome() &&
+      mRemoteDocumentRect.value() == aRemoteDocumentRect) {
+    return;
+  }
+
   mChildToParentConversionMatrix = aMatrix;
+  mRemoteDocumentRect = Some(aRemoteDocumentRect);
   if (mIsDestroyed) {
     return;
   }
@@ -3167,23 +3201,6 @@ mozilla::ipc::IPCResult BrowserParent::RecvSetInputContext(
   return IPC_OK();
 }
 
-mozilla::ipc::IPCResult BrowserParent::RecvSetNativeChildOfShareableWindow(
-    const uintptr_t& aChildWindow) {
-#if defined(XP_WIN)
-  nsCOMPtr<nsIWidget> widget = GetTopLevelWidget();
-  if (widget) {
-    // Note that this call will probably cause a sync native message to the
-    // process that owns the child window.
-    widget->SetNativeData(NS_NATIVE_CHILD_OF_SHAREABLE_WINDOW, aChildWindow);
-  }
-  return IPC_OK();
-#else
-  MOZ_ASSERT_UNREACHABLE(
-      "BrowserParent::RecvSetNativeChildOfShareableWindow not implemented!");
-  return IPC_FAIL_NO_REASON(this);
-#endif
-}
-
 mozilla::ipc::IPCResult BrowserParent::RecvDispatchFocusToTopLevelWindow() {
   if (nsCOMPtr<nsIWidget> widget = GetTopLevelWidget()) {
     widget->SetFocus(nsIWidget::Raise::No, CallerType::System);
@@ -3360,7 +3377,7 @@ void BrowserParent::SetRenderLayers(bool aEnabled) {
     mActiveInPriorityManager = aEnabled;
     // Let's inform the priority manager. This operation can end up with the
     // changing of the process priority.
-    ProcessPriorityManager::TabActivityChanged(this, aEnabled);
+    ProcessPriorityManager::ActivityChanged(this, aEnabled);
   }
 
   if (aEnabled == mRenderLayers) {
@@ -3427,7 +3444,7 @@ void BrowserParent::NotifyResolutionChanged() {
 
 void BrowserParent::Deprioritize() {
   if (mActiveInPriorityManager) {
-    ProcessPriorityManager::TabActivityChanged(this, false);
+    ProcessPriorityManager::ActivityChanged(this, false);
     mActiveInPriorityManager = false;
   }
 }
@@ -3667,22 +3684,6 @@ mozilla::ipc::IPCResult BrowserParent::RecvRemoteIsReadyToHandleInputEvents() {
   // events.
   SetReadyToHandleInputEvents();
   return IPC_OK();
-}
-
-mozilla::plugins::PPluginWidgetParent*
-BrowserParent::AllocPPluginWidgetParent() {
-#ifdef XP_WIN
-  return new mozilla::plugins::PluginWidgetParent();
-#else
-  MOZ_ASSERT_UNREACHABLE("AllocPPluginWidgetParent only supports Windows");
-  return nullptr;
-#endif
-}
-
-bool BrowserParent::DeallocPPluginWidgetParent(
-    mozilla::plugins::PPluginWidgetParent* aActor) {
-  delete aActor;
-  return true;
 }
 
 PPaymentRequestParent* BrowserParent::AllocPPaymentRequestParent() {

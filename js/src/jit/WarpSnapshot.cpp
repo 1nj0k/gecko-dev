@@ -12,6 +12,7 @@
 
 #include "jit/CacheIRCompiler.h"
 #include "jit/CacheIRSpewer.h"
+#include "vm/GetterSetter.h"
 #include "vm/GlobalObject.h"
 #include "vm/JSContext.h"
 #include "vm/Printer.h"
@@ -169,10 +170,6 @@ void WarpNewArray::dumpData(GenericPrinter& out) const {
   out.printf("    useVMCall: %u\n", useVMCall());
 }
 
-void WarpNewObject::dumpData(GenericPrinter& out) const {
-  out.printf("    template: 0x%p\n", templateObject());
-}
-
 void WarpBindGName::dumpData(GenericPrinter& out) const {
   out.printf("    globalEnv: 0x%p\n", globalEnv());
 }
@@ -302,10 +299,6 @@ void WarpNewArray::traceData(JSTracer* trc) {
   TraceWarpGCPtr(trc, templateObject_, "warp-newarray-template");
 }
 
-void WarpNewObject::traceData(JSTracer* trc) {
-  TraceWarpGCPtr(trc, templateObject_, "warp-newobject-template");
-}
-
 void WarpBindGName::traceData(JSTracer* trc) {
   TraceWarpGCPtr(trc, globalEnv_, "warp-bindgname-globalenv");
 }
@@ -335,6 +328,12 @@ void WarpCacheIR::traceData(JSTracer* trc) {
         case StubField::Type::Shape: {
           uintptr_t word = stubInfo_->getStubRawWord(stubData_, offset);
           TraceWarpStubPtr<Shape>(trc, word, "warp-cacheir-shape");
+          break;
+        }
+        case StubField::Type::GetterSetter: {
+          uintptr_t word = stubInfo_->getStubRawWord(stubData_, offset);
+          TraceWarpStubPtr<GetterSetter>(trc, word,
+                                         "warp-cacheir-getter-setter");
           break;
         }
         case StubField::Type::JSObject: {

@@ -13,6 +13,13 @@ job-defaults:
         by-test-platform:
             linux.*shippable[^-qr].*: ['mozilla-central']
             default: []
+    limit-platforms:
+        by-app:
+            chrome:
+                - .*shippable(?!-qr).*
+            chromium:
+                - .*shippable(?!-qr).*
+            default: []
     test-manifest-loader: null  # don't load tests in the taskgraph
     tier: 3
     virtualization: hardware
@@ -28,7 +35,6 @@ job-defaults:
                     - raptor/linux_config.py
         extra-options:
             - --browsertime
-            - --no-conditioned-profile
     variants:
         by-app:
             firefox:
@@ -53,35 +59,33 @@ browsertime-tp6:
         mozharness:
             extra-options:
                 by-test-platform:
-                    windows10.*shippable.*-qr.*:
+                    windows10-64.*shippable.*-qr.*:
                         - --chimera
                         - --browsertime
-                        - --no-conditioned-profile
                         - --browsertime-no-ffwindowrecorder
                     default:
                         - --chimera
                         - --browsertime
-                        - --no-conditioned-profile
         raptor-test: tp6
         run-on-projects:
             by-variant:
                 fission:
                     by-test-platform:
-                        windows7.*: []
+                        windows.*-32.*: []
                         default: [mozilla-central]
                 default:
                     by-app:
                         firefox:
                             by-test-platform:
                                 linux.*shippable.*: [trunk, mozilla-beta]
-                                macos.*shippable.*: [trunk, mozilla-beta]
-                                windows10.*shippable.*: [trunk, mozilla-beta]
+                                macosx1014-64-shippable-qr.*: [trunk]
+                                macosx1015.*shippable-qr.*: [trunk, mozilla-beta]
+                                windows10-64.*shippable.*: [trunk, mozilla-beta]
                                 default: []
                         default: []
         run-visual-metrics: true
         treeherder-symbol: Btime(tp6)
     raptor-subtests:
-        - apple
         - [bing-search, bing]
         - buzzfeed
         - cnn
@@ -92,7 +96,6 @@ browsertime-tp6:
         - fandom
         - [google-docs, gdocs]
         - [google-search, gsearch]
-        - [google-sheets, gsheets]
         - imdb
         - instagram
         - linkedin
@@ -107,8 +110,6 @@ browsertime-tp6:
         - wikia
         - wikipedia
         - yahoo-mail
-        - yahoo-news
-        - yandex
         - youtube
     tier:
         by-variant:
@@ -132,15 +133,17 @@ browsertime-tp6-essential:
         by-variant:
             fission:
                 by-test-platform:
-                    windows7.*: []
+                    windows.*-32.*: []
                     default: [mozilla-central]
             default:
                 by-app:
                     firefox:
                         by-test-platform:
                             linux.*shippable.*: ["trunk", "mozilla-beta"]
-                            macos.*shippable-qr.*: ["trunk", "mozilla-beta"]
-                            windows10.*shippable.*: ["trunk", "mozilla-beta"]
+                            macosx1014-64-shippable-qr.*: ["trunk"]
+                            macosx1015.*shippable.*: ["trunk", "mozilla-beta"]
+                            windows10-64.*shippable.*: ["trunk", "mozilla-beta"]
+                            macosx1100.*shippable.*: ["mozilla-central", "mozilla-beta"]
                             default: []
                     default: []
     tier:
@@ -151,24 +154,17 @@ browsertime-tp6-essential:
 browsertime-benchmark:
     description: "Raptor (browsertime) Benchmark tests "
     raptor-subtests:
-        - [speedometer, sp]
         - ares6
-        - [motionmark-animometer, mm-a]
-        - [motionmark-htmlsuite, mm-h]
-        - [stylebench, sb]
-        - [webaudio, wa]
-        - [wasm-godot, godot]
-        - [wasm-godot-baseline, godot-b]
-        - [wasm-godot-optimizing, godot-i]
-        - [sunspider, ss]
         - [assorted-dom, dom]
         - [jetstream2, js2]
+        - [motionmark-animometer, mm-a]
+        - [motionmark-htmlsuite, mm-h]
+        - [speedometer, sp]
+        - [stylebench, sb]
+        - [sunspider, ss]
         - [unity-webgl, ugl]
-        - [wasm-misc, wm]
-        - [wasm-misc-baseline, wm-b]
-        - [wasm-misc-optimizing, wm-i]
-    variants: ["fission"]
-    apps: ["firefox"]
+        - [webaudio, wa]
+    apps: [firefox, chrome, chromium]
     treeherder-symbol: Btime()
     tier:
         by-variant:
@@ -178,18 +174,22 @@ browsertime-benchmark:
                     firefox:
                         by-subtest:
                             motionmark-animometer: 1
+                            unity-webgl: 3
                             default:
                                 by-test-platform:
                                     windows10-64-ref-hw-2017/opt: 2
                                     windows10-64-ccov.*/.*: 3
                                     linux64-ccov.*/.*: 3
                                     default: 2
-                    default: 2
+                    default:
+                        by-subtest:
+                            unity-webgl: 3
+                            default: 2
     run-on-projects:
         by-variant:
             fission:
                 by-test-platform:
-                    windows7.*: []
+                    windows.*-32.*: []
                     default: [mozilla-central]
             default:
                 by-subtest:
@@ -197,15 +197,16 @@ browsertime-benchmark:
                         by-app:
                             firefox:
                                 by-test-platform:
-                                    windows7-32.*/opt: []
-                                    (linux|windows10|macos)(?!.*shippable).*: []
+                                    windows.*-32.*/opt: []
+                                    (linux|windows10-64|macos)(?!.*shippable).*: []
                                     default: ['mozilla-central']
                             default: []
                     unity-webgl:
                         by-app:
                             firefox:
                                 by-test-platform:
-                                    (linux|windows|macos)(?!.*shippable).*: []
+                                    windows.*-32.*: []
+                                    (linux|windows10-64|macos)(?!.*shippable).*: []
                                     default: ["autoland"]
                             default: []
                     default:
@@ -214,8 +215,9 @@ browsertime-benchmark:
                                 by-test-platform:
                                     (linux|windows|macos)(?!.*shippable).*: []
                                     linux.*shippable.*: ["trunk", "mozilla-beta"]
-                                    macos.*shippable.*: ["trunk", "mozilla-beta"]
-                                    windows10.*shippable.*: ["trunk", "mozilla-beta"]
+                                    macosx1014-64-shippable-qr.*: ["trunk"]
+                                    macosx1015.*shippable.*: ["trunk", "mozilla-beta"]
+                                    windows10-64.*shippable.*: ["trunk", "mozilla-beta"]
                                     default: []
                             default: []
     max-run-time:
@@ -226,12 +228,57 @@ browsertime-benchmark:
                     .*-ref-hw-2017/.*: 2100
                     default: 1500
             jetstream2: 8000
+            motionmark-htmlsuite: 1500
+            unity-webgl: 1500
             default: 900
     fetches:
         fetch:
             - assorted-dom
             - jetstream2
             - unity-webgl
+
+browsertime-benchmark-wasm:
+    description: "Raptor (browsertime) WASM benchmarks"
+    raptor-subtests:
+        by-app:
+            firefox:
+                - [wasm-godot, godot]
+                - [wasm-godot-baseline, godot-b]
+                - [wasm-godot-optimizing, godot-i]
+                - [wasm-misc, wm]
+                - [wasm-misc-baseline, wm-b]
+                - [wasm-misc-optimizing, wm-i]
+            default:
+                - [wasm-misc, wm]
+                - [wasm-godot, godot]
+    apps: [firefox, chrome, chromium]
+    treeherder-symbol: Btime()
+    tier: 2
+    run-on-projects:
+        by-variant:
+            fission:
+                by-test-platform:
+                    windows.*-32.*: []
+                    macosx1014.*: []
+                    default: [mozilla-central]
+            default:
+                by-app:
+                    firefox:
+                        by-test-platform:
+                            macosx1014.*: []
+                            (linux|windows|macos)(?!.*shippable).*: []
+                            linux.*shippable.*: ["trunk", "mozilla-beta"]
+                            macosx1015.*shippable.*: ["trunk", "mozilla-beta"]
+                            windows10-64.*shippable.*: ["trunk", "mozilla-beta"]
+                            default: []
+                    default: []
+    max-run-time:
+        by-subtest:
+            wasm-godot: 1500
+            wasm-godot-baseline: 1500
+            default: 900
+    fetches:
+        fetch:
             - wasm-misc
 
 browsertime-tp6-live:
@@ -244,7 +291,6 @@ browsertime-tp6-live:
             - --live-sites
     raptor-subtests:
         - amazon
-        - apple
         - [bing-search, bing]
         - ebay
         - [facebook, fb]
@@ -252,7 +298,6 @@ browsertime-tp6-live:
         - [google-docs, gdocs]
         - [google-mail, gmail]
         - [google-search, gsearch]
-        - [google-sheets, gsheets]
         - [google-slides, gslides]
         - imdb
         - imgur
@@ -270,8 +315,6 @@ browsertime-tp6-live:
         - twitter
         - wikipedia
         - yahoo-mail
-        - yahoo-news
-        - yandex
         - youtube
     run-on-projects: []
     tier: 3
@@ -292,8 +335,9 @@ browsertime-tp6-live-sheriffed:
             fission: []
             default:
                 by-test-platform:
-                    (linux|windows|macos)(?!.*shippable).*: []
-                    windows7.*shippable.*: []
+                    (linux|windows10-64|macos)(?!.*shippable).*: []
+                    windows.*-32.*shippable.*: []
+                    macosx1014.*: []
                     default: [autoland]
     tier: 2
     treeherder-symbol: Btime-live(tp6)
@@ -319,3 +363,27 @@ browsertime-tp6-profiling:
             fission: 2
             default: 3
     treeherder-symbol: Btime-Prof(tp6)
+
+browsertime-custom:
+    apps: [firefox]
+    description: Raptor (browsertime) custom pageload tests
+    run-visual-metrics: true
+    max-run-time: 2700
+    mozharness:
+        extra-options:
+            - --chimera
+    raptor-subtests: [[process-switch, ps]]
+    run-on-projects:
+        by-variant:
+            fission:
+                by-test-platform:
+                    windows.*-32.*: []
+                    default: [mozilla-central]
+            default:
+                by-test-platform:
+                    linux.*shippable.*: [mozilla-central]
+                    macos.*shippable-qr.*: [mozilla-central]
+                    windows10-64.*shippable.*: [mozilla-central]
+                    default: []
+    tier: 2
+    treeherder-symbol: Btime(ps)

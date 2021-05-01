@@ -610,10 +610,6 @@ class ContentChild final : public PContentChild,
   nsresult AsyncOpenAnonymousTemporaryFile(
       const AnonymousTemporaryFileCallback& aCallback);
 
-  mozilla::ipc::IPCResult RecvSetPluginList(
-      const uint32_t& aPluginEpoch, nsTArray<PluginTag>&& aPluginTags,
-      nsTArray<FakePluginTag>&& aFakePluginTags);
-
   mozilla::ipc::IPCResult RecvSaveRecording(const FileDescriptor& aFile);
 
   mozilla::ipc::IPCResult RecvCrossProcessRedirect(
@@ -710,7 +706,7 @@ class ContentChild final : public PContentChild,
   mozilla::ipc::IPCResult RecvClearFocus(
       const MaybeDiscarded<BrowsingContext>& aContext);
   mozilla::ipc::IPCResult RecvSetFocusedBrowsingContext(
-      const MaybeDiscarded<BrowsingContext>& aContext);
+      const MaybeDiscarded<BrowsingContext>& aContext, uint64_t aActionId);
   mozilla::ipc::IPCResult RecvSetActiveBrowsingContext(
       const MaybeDiscarded<BrowsingContext>& aContext, uint64_t aActionId);
   mozilla::ipc::IPCResult RecvAbortOrientationPendingPromises(
@@ -729,11 +725,16 @@ class ContentChild final : public PContentChild,
       bool aIsLeavingDocument, bool aAdjustWidget, uint64_t aActionId);
   mozilla::ipc::IPCResult RecvSetupFocusedAndActive(
       const MaybeDiscarded<BrowsingContext>& aFocusedBrowsingContext,
+      uint64_t aActionIdForFocused,
       const MaybeDiscarded<BrowsingContext>& aActiveBrowsingContext,
-      uint64_t aActionId);
+      uint64_t aActionIdForActive);
   mozilla::ipc::IPCResult RecvReviseActiveBrowsingContext(
       uint64_t aOldActionId,
       const MaybeDiscarded<BrowsingContext>& aActiveBrowsingContext,
+      uint64_t aNewActionId);
+  mozilla::ipc::IPCResult RecvReviseFocusedBrowsingContext(
+      uint64_t aOldActionId,
+      const MaybeDiscarded<BrowsingContext>& aFocusedBrowsingContext,
       uint64_t aNewActionId);
   mozilla::ipc::IPCResult RecvMaybeExitFullscreen(
       const MaybeDiscarded<BrowsingContext>& aContext);
@@ -778,15 +779,15 @@ class ContentChild final : public PContentChild,
 
   mozilla::ipc::IPCResult RecvGoBack(
       const MaybeDiscarded<BrowsingContext>& aContext,
-      const Maybe<int32_t>& aCancelContentJSEpoch,
-      bool aRequireUserInteraction);
+      const Maybe<int32_t>& aCancelContentJSEpoch, bool aRequireUserInteraction,
+      bool aUserActivation);
   mozilla::ipc::IPCResult RecvGoForward(
       const MaybeDiscarded<BrowsingContext>& aContext,
-      const Maybe<int32_t>& aCancelContentJSEpoch,
-      bool aRequireUserInteraction);
+      const Maybe<int32_t>& aCancelContentJSEpoch, bool aRequireUserInteraction,
+      bool aUserActivation);
   mozilla::ipc::IPCResult RecvGoToIndex(
       const MaybeDiscarded<BrowsingContext>& aContext, const int32_t& aIndex,
-      const Maybe<int32_t>& aCancelContentJSEpoch);
+      const Maybe<int32_t>& aCancelContentJSEpoch, bool aUserActivation);
   mozilla::ipc::IPCResult RecvReload(
       const MaybeDiscarded<BrowsingContext>& aContext,
       const uint32_t aReloadFlags);
@@ -822,6 +823,9 @@ class ContentChild final : public PContentChild,
   mozilla::ipc::IPCResult RecvFlushTabState(
       const MaybeDiscarded<BrowsingContext>& aContext,
       FlushTabStateResolver&& aResolver);
+
+  mozilla::ipc::IPCResult RecvDecoderSupportedMimeTypes(
+      nsTArray<nsCString>&& aSupportedTypes);
 
  public:
   static void DispatchBeforeUnloadToSubtree(

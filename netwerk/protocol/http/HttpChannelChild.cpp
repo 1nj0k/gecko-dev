@@ -61,7 +61,6 @@
 #include "nsStreamUtils.h"
 #include "nsThreadUtils.h"
 #include "nsCORSListenerProxy.h"
-#include "nsApplicationCache.h"
 #include "ClassifierDummyChannel.h"
 #include "nsIOService.h"
 
@@ -277,9 +276,6 @@ NS_INTERFACE_MAP_BEGIN(HttpChannelChild)
   NS_INTERFACE_MAP_ENTRY(nsIClassOfService)
   NS_INTERFACE_MAP_ENTRY(nsIProxiedChannel)
   NS_INTERFACE_MAP_ENTRY(nsITraceableChannel)
-  NS_INTERFACE_MAP_ENTRY_CONDITIONAL(nsIApplicationCacheContainer,
-                                     !mMultiPartID.isSome())
-  NS_INTERFACE_MAP_ENTRY(nsIApplicationCacheChannel)
   NS_INTERFACE_MAP_ENTRY(nsIAsyncVerifyRedirectCallback)
   NS_INTERFACE_MAP_ENTRY(nsIChildChannel)
   NS_INTERFACE_MAP_ENTRY(nsIHttpChannelChild)
@@ -343,15 +339,6 @@ void HttpChannelChild::OnBackgroundChildDestroyed(
     nsCOMPtr<nsISerialEventTarget> neckoTarget = GetNeckoTarget();
     neckoTarget->Dispatch(callback, NS_DISPATCH_NORMAL);
   }
-}
-
-void HttpChannelChild::AssociateApplicationCache(const nsCString& aGroupID,
-                                                 const nsCString& aClientID) {
-  LOG(("HttpChannelChild::AssociateApplicationCache [this=%p]\n", this));
-  mApplicationCache = new nsApplicationCache();
-
-  StoreLoadedFromApplicationCache(true);
-  mApplicationCache->InitAsHandle(aGroupID, aClientID);
 }
 
 mozilla::ipc::IPCResult HttpChannelChild::RecvOnStartRequestSent() {
@@ -472,12 +459,6 @@ void HttpChannelChild::OnStartRequest(
 
   mMultiPartID = aArgs.multiPartID();
   mIsLastPartOfMultiPart = aArgs.isLastPartOfMultiPart();
-
-  if (!aArgs.appCacheGroupId().IsEmpty() &&
-      !aArgs.appCacheClientId().IsEmpty()) {
-    AssociateApplicationCache(aArgs.appCacheGroupId(),
-                              aArgs.appCacheClientId());
-  }
 
   if (aArgs.overrideReferrerInfo()) {
     // The arguments passed to SetReferrerInfoInternal here should mirror the
@@ -912,14 +893,17 @@ void HttpChannelChild::OnStopRequest(
   }
 #endif
 
+  TimeDuration channelCompletionDuration = TimeStamp::Now() - mAsyncOpenTime;
   if (mIsFromCache) {
     PerfStats::RecordMeasurement(PerfStats::Metric::HttpChannelCompletion_Cache,
-                                 TimeStamp::Now() - mAsyncOpenTime);
+                                 channelCompletionDuration);
   } else {
     PerfStats::RecordMeasurement(
         PerfStats::Metric::HttpChannelCompletion_Network,
-        TimeStamp::Now() - mAsyncOpenTime);
+        channelCompletionDuration);
   }
+  PerfStats::RecordMeasurement(PerfStats::Metric::HttpChannelCompletion,
+                               channelCompletionDuration);
 
   mResponseTrailers = MakeUnique<nsHttpHeaderArray>(aResponseTrailers);
 
@@ -1620,6 +1604,13 @@ HttpChannelChild::ConnectParent(uint32_t registrarId) {
   // target.
   SetEventTarget();
 
+  if (browserChild) {
+    MOZ_ASSERT(browserChild->WebNavigation());
+    if (BrowsingContext* bc = browserChild->GetBrowsingContext()) {
+      mTopBrowsingContextId = bc->Top()->Id();
+    }
+  }
+
   HttpChannelConnectArgs connectArgs(registrarId);
   if (!gNeckoChild->SendPHttpChannelConstructor(
           this, browserChild, IPC::SerializedLoadContext(this), connectArgs)) {
@@ -1794,13 +1785,6 @@ HttpChannelChild::OnRedirectVerifyCallback(nsresult aResult) {
     }
   }
 
-  bool chooseAppcache = false;
-  nsCOMPtr<nsIApplicationCacheChannel> appCacheChannel =
-      do_QueryInterface(newHttpChannel);
-  if (appCacheChannel) {
-    appCacheChannel->GetChooseApplicationCache(&chooseAppcache);
-  }
-
   uint32_t sourceRequestBlockingReason = 0;
   mLoadInfo->GetRequestBlockingReason(&sourceRequestBlockingReason);
 
@@ -1816,7 +1800,7 @@ HttpChannelChild::OnRedirectVerifyCallback(nsresult aResult) {
   if (CanSend())
     SendRedirect2Verify(aResult, *headerTuples, sourceRequestBlockingReason,
                         targetLoadInfoForwarder, loadFlags, referrerInfo,
-                        redirectURI, corsPreflightArgs, chooseAppcache);
+                        redirectURI, corsPreflightArgs);
 
   return NS_OK;
 }
@@ -2123,23 +2107,6 @@ already_AddRefed<nsIEventTarget> HttpChannelChild::GetODATarget() {
 
 nsresult HttpChannelChild::ContinueAsyncOpen() {
   nsresult rv;
-  nsCString appCacheClientId;
-  if (LoadInheritApplicationCache()) {
-    // Pick up an application cache from the notification
-    // callbacks if available
-    nsCOMPtr<nsIApplicationCacheContainer> appCacheContainer;
-    GetCallback(appCacheContainer);
-
-    if (appCacheContainer) {
-      nsCOMPtr<nsIApplicationCache> appCache;
-      nsresult rv =
-          appCacheContainer->GetApplicationCache(getter_AddRefs(appCache));
-      if (NS_SUCCEEDED(rv) && appCache) {
-        appCache->GetClientID(appCacheClientId);
-      }
-    }
-  }
-
   //
   // Send request to the chrome process...
   //
@@ -2165,7 +2132,9 @@ nsresult HttpChannelChild::ContinueAsyncOpen() {
         navigationStartTimeStamp =
             navigationTiming->GetNavigationStartTimeStamp();
       }
-      mTopLevelOuterContentWindowId = document->OuterWindowID();
+    }
+    if (BrowsingContext* bc = browserChild->GetBrowsingContext()) {
+      mTopBrowsingContextId = bc->Top()->Id();
     }
   }
   SetTopLevelContentWindowId(contentWindowId);
@@ -2209,8 +2178,6 @@ nsresult HttpChannelChild::ContinueAsyncOpen() {
   openArgs.resumeAt() = mSendResumeAt;
   openArgs.startPos() = mStartPos;
   openArgs.entityID() = mEntityID;
-  openArgs.chooseApplicationCache() = LoadChooseApplicationCache();
-  openArgs.appCacheClientID() = appCacheClientId;
   openArgs.allowSpdy() = LoadAllowSpdy();
   openArgs.allowHttp3() = LoadAllowHttp3();
   openArgs.allowAltSvc() = LoadAllowAltSvc();
@@ -2241,11 +2208,11 @@ nsresult HttpChannelChild::ContinueAsyncOpen() {
   openArgs.integrityMetadata() = mIntegrityMetadata;
 
   openArgs.contentWindowId() = contentWindowId;
-  openArgs.topLevelOuterContentWindowId() = mTopLevelOuterContentWindowId;
+  openArgs.topBrowsingContextId() = mTopBrowsingContextId;
 
   LOG(("HttpChannelChild::ContinueAsyncOpen this=%p gid=%" PRIu64
-       " topwinid=%" PRIx64,
-       this, mChannelId, mTopLevelOuterContentWindowId));
+       " top bid=%" PRIx64,
+       this, mChannelId, mTopBrowsingContextId));
 
   if (browserChild && !browserChild->IPCOpen()) {
     return NS_ERROR_FAILURE;
@@ -2266,7 +2233,6 @@ nsresult HttpChannelChild::ContinueAsyncOpen() {
   openArgs.forceMainDocumentChannel() = LoadForceMainDocumentChannel();
 
   openArgs.navigationStartTimeStamp() = navigationStartTimeStamp;
-  openArgs.hasNonEmptySandboxingFlag() = GetHasNonEmptySandboxingFlag();
 
   // This must happen before the constructor message is sent. Otherwise messages
   // from the parent could arrive quickly and be delivered to the wrong event
@@ -2384,11 +2350,6 @@ HttpChannelChild::GetProtocolVersion(nsACString& aProtocolVersion) {
 //-----------------------------------------------------------------------------
 // HttpChannelChild::nsIHttpChannelInternal
 //-----------------------------------------------------------------------------
-
-NS_IMETHODIMP
-HttpChannelChild::SetupFallbackChannel(const char* aFallbackKey) {
-  DROP_DEAD();
-}
 
 NS_IMETHODIMP
 HttpChannelChild::GetIsAuthChannel(bool* aIsAuthChannel) { DROP_DEAD(); }
@@ -2689,78 +2650,6 @@ HttpChannelChild::GetProxyInfo(nsIProxyInfo** aProxyInfo) { DROP_DEAD(); }
 NS_IMETHODIMP HttpChannelChild::GetHttpProxyConnectResponseCode(
     int32_t* aResponseCode) {
   DROP_DEAD();
-}
-
-//-----------------------------------------------------------------------------
-// HttpChannelChild::nsIApplicationCacheContainer
-//-----------------------------------------------------------------------------
-
-NS_IMETHODIMP
-HttpChannelChild::GetApplicationCache(nsIApplicationCache** aApplicationCache) {
-  NS_IF_ADDREF(*aApplicationCache = mApplicationCache);
-  return NS_OK;
-}
-NS_IMETHODIMP
-HttpChannelChild::SetApplicationCache(nsIApplicationCache* aApplicationCache) {
-  NS_ENSURE_TRUE(!LoadWasOpened(), NS_ERROR_ALREADY_OPENED);
-
-  mApplicationCache = aApplicationCache;
-  return NS_OK;
-}
-
-//-----------------------------------------------------------------------------
-// HttpChannelChild::nsIApplicationCacheChannel
-//-----------------------------------------------------------------------------
-
-NS_IMETHODIMP
-HttpChannelChild::GetApplicationCacheForWrite(
-    nsIApplicationCache** aApplicationCache) {
-  *aApplicationCache = nullptr;
-  return NS_OK;
-}
-NS_IMETHODIMP
-HttpChannelChild::SetApplicationCacheForWrite(
-    nsIApplicationCache* aApplicationCache) {
-  NS_ENSURE_TRUE(!LoadWasOpened(), NS_ERROR_ALREADY_OPENED);
-
-  // Child channels are not intended to be used for cache writes
-  return NS_ERROR_NOT_IMPLEMENTED;
-}
-
-NS_IMETHODIMP
-HttpChannelChild::GetLoadedFromApplicationCache(
-    bool* aLoadedFromApplicationCache) {
-  *aLoadedFromApplicationCache = LoadLoadedFromApplicationCache();
-  return NS_OK;
-}
-
-NS_IMETHODIMP
-HttpChannelChild::GetInheritApplicationCache(bool* aInherit) {
-  *aInherit = LoadInheritApplicationCache();
-  return NS_OK;
-}
-NS_IMETHODIMP
-HttpChannelChild::SetInheritApplicationCache(bool aInherit) {
-  StoreInheritApplicationCache(aInherit);
-  return NS_OK;
-}
-
-NS_IMETHODIMP
-HttpChannelChild::GetChooseApplicationCache(bool* aChoose) {
-  *aChoose = LoadChooseApplicationCache();
-  return NS_OK;
-}
-
-NS_IMETHODIMP
-HttpChannelChild::SetChooseApplicationCache(bool aChoose) {
-  StoreChooseApplicationCache(aChoose);
-  return NS_OK;
-}
-
-NS_IMETHODIMP
-HttpChannelChild::MarkOfflineCacheEntryAsForeign() {
-  SendMarkOfflineCacheEntryAsForeign();
-  return NS_OK;
 }
 
 //-----------------------------------------------------------------------------

@@ -233,8 +233,8 @@ class HttpBaseChannel : public nsHashPropertyBag,
   NS_IMETHOD SetChannelId(uint64_t aChannelId) override;
   NS_IMETHOD GetTopLevelContentWindowId(uint64_t* aContentWindowId) override;
   NS_IMETHOD SetTopLevelContentWindowId(uint64_t aContentWindowId) override;
-  NS_IMETHOD GetTopLevelOuterContentWindowId(uint64_t* aWindowId) override;
-  NS_IMETHOD SetTopLevelOuterContentWindowId(uint64_t aWindowId) override;
+  NS_IMETHOD GetTopBrowsingContextId(uint64_t* aId) override;
+  NS_IMETHOD SetTopBrowsingContextId(uint64_t aId) override;
 
   NS_IMETHOD GetFlashPluginState(
       nsIHttpChannel::FlashPluginState* aState) override;
@@ -328,13 +328,6 @@ class HttpBaseChannel : public nsHashPropertyBag,
   NS_IMETHOD HasCrossOriginOpenerPolicyMismatch(bool* aIsMismatch) override;
   NS_IMETHOD GetResponseEmbedderPolicy(
       nsILoadInfo::CrossOriginEmbedderPolicy* aOutPolicy) override;
-  virtual bool GetHasNonEmptySandboxingFlag() override {
-    return LoadHasNonEmptySandboxingFlag();
-  }
-  virtual void SetHasNonEmptySandboxingFlag(
-      bool aHasNonEmptySandboxingFlag) override {
-    StoreHasNonEmptySandboxingFlag(aHasNonEmptySandboxingFlag);
-  }
 
   inline void CleanRedirectCacheChainIfNecessary() {
     mRedirectedCachekeys = nullptr;
@@ -635,7 +628,6 @@ class HttpBaseChannel : public nsHashPropertyBag,
   nsCOMPtr<nsIInterfaceRequestor> mCallbacks;
   nsCOMPtr<nsIProgressEventSink> mProgressSink;
   nsCOMPtr<nsIReferrerInfo> mReferrerInfo;
-  nsCOMPtr<nsIApplicationCache> mApplicationCache;
   nsCOMPtr<nsIURI> mAPIRedirectToURI;
   nsCOMPtr<nsIURI> mProxyURI;
   nsCOMPtr<nsIPrincipal> mPrincipal;
@@ -748,7 +740,7 @@ class HttpBaseChannel : public nsHashPropertyBag,
   // ID of the top-level document's inner window this channel is being
   // originated from.
   uint64_t mContentWindowId;
-  uint64_t mTopLevelOuterContentWindowId;
+  uint64_t mTopBrowsingContextId;
   int64_t mAltDataLength;
   uint64_t mChannelId;
   uint64_t mReqContentLength;
@@ -784,9 +776,6 @@ class HttpBaseChannel : public nsHashPropertyBag,
     (uint32_t, AllowSTS, 1),
     (uint32_t, ThirdPartyFlags, 3),
     (uint32_t, UploadStreamHasHeaders, 1),
-    (uint32_t, InheritApplicationCache, 1),
-    (uint32_t, ChooseApplicationCache, 1),
-    (uint32_t, LoadedFromApplicationCache, 1),
     (uint32_t, ChannelIsForDownload, 1),
     (uint32_t, TracingEnabled, 1),
     // True if timing collection is enabled
@@ -843,9 +832,6 @@ class HttpBaseChannel : public nsHashPropertyBag,
     // Defaults to true.  This is set to false when it is no longer possible
     // to upgrade the request to a secure channel.
     (uint32_t, UpgradableToSecure, 1),
-
-    // True if the docshell's sandboxing flag set is not empty.
-    (uint32_t, HasNonEmptySandboxingFlag, 1),
 
     // Tainted origin flag of a request, specified by
     // WHATWG Fetch Standard 2.2.5.
@@ -959,7 +945,7 @@ class HttpBaseChannel : public nsHashPropertyBag,
   void AddAsNonTailRequest();
   void RemoveAsNonTailRequest();
 
-  void EnsureTopLevelOuterContentWindowId();
+  void EnsureTopBrowsingContextId();
 
   void InitiateORBTelemetry();
 

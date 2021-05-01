@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-@supports not -moz-bool-pref("browser.proton.doorhangers.enabled") {
+@media not (-moz-proton-doorhangers) {
 #editBookmarkPanelRows > vbox {
   margin-bottom: .5em;
 }
@@ -27,6 +27,7 @@
 
 /**** expanders ****/
 
+@media not (-moz-proton-modals) {
 .expander-up,
 .expander-down {
   margin-block: 0 1px;
@@ -43,6 +44,7 @@
   appearance: auto;
   -moz-default-appearance: -moz-mac-disclosure-button-closed;
 }
+} /** END not Proton **/
 
 #editBMPanel_folderTree {
   margin: 6px 4px 0;

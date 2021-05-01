@@ -30,11 +30,14 @@ async function test_decoder_doctor_notification(
     await BrowserTestUtils.withNewTab(
       { gBrowser, url: TEST_URL },
       async function(browser) {
-        let awaitNotificationBar = BrowserTestUtils.waitForNotificationBar(
-          gBrowser,
-          browser,
-          "decoder-doctor-notification"
-        );
+        let awaitNotificationBar;
+        if (notificationMessage) {
+          awaitNotificationBar = BrowserTestUtils.waitForNotificationBar(
+            gBrowser,
+            browser,
+            "decoder-doctor-notification"
+          );
+        }
 
         await SpecialPowers.spawn(
           browser,
@@ -96,12 +99,12 @@ async function test_decoder_doctor_notification(
 
         is(
           notification.messageText.textContent,
-          notificationMessage,
+          notificationMessage + (gProton && isLink && label ? " " : ""),
           "notification message should match expectation"
         );
 
-        let button = notification.querySelector("button");
-        let link = notification.querySelector(".text-link");
+        let button = notification.buttonContainer.querySelector("button");
+        let link = notification.messageText.querySelector(".text-link");
         if (!label) {
           ok(!button, "There should not be a button");
           ok(!link, "There should not be a link");

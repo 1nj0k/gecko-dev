@@ -11,6 +11,9 @@ search-header =
 search-header-shortcut =
     .key = f
 
+list-empty-get-extensions-message =
+    Get extensions and themes on <a data-l10n-name="get-extensions">{ $domain }</a>
+
 list-empty-installed =
     .value = You don’t have any add-ons of this type installed
 
@@ -353,7 +356,6 @@ dictionary-disabled-heading = Disabled
 locale-enabled-heading = Enabled
 locale-disabled-heading = Disabled
 
-ask-to-activate-button = Ask to Activate
 always-activate-button = Always Activate
 never-activate-button = Never Activate
 

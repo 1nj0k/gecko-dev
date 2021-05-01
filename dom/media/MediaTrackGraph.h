@@ -1047,16 +1047,12 @@ class MediaTrackGraph {
   static MediaTrackGraph* CreateNonRealtimeInstance(
       TrackRate aSampleRate, nsPIDOMWindowInner* aWindowId);
 
-  // Return the correct main thread for this graph. This always returns
-  // something that is valid. Thread safe.
-  AbstractThread* AbstractMainThread();
-
   // Idempotent
   void ForceShutDown();
 
   virtual nsresult OpenAudioInput(CubebUtils::AudioDeviceID aID,
                                   AudioDataListener* aListener) = 0;
-  virtual void CloseAudioInput(Maybe<CubebUtils::AudioDeviceID>& aID,
+  virtual void CloseAudioInput(CubebUtils::AudioDeviceID aID,
                                AudioDataListener* aListener) = 0;
 
   // Control API.

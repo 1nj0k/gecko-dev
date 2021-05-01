@@ -2,11 +2,8 @@
 
 var FormAutofillHeuristics, LabelUtils;
 add_task(async function() {
-  ({ FormAutofillHeuristics } = ChromeUtils.import(
-    "resource://formautofill/FormAutofillHeuristics.jsm"
-  ));
-  ({ LabelUtils } = ChromeUtils.import(
-    "resource://formautofill/FormAutofillUtils.jsm"
+  ({ FormAutofillHeuristics, LabelUtils } = ChromeUtils.import(
+    "resource://autofill/FormAutofillHeuristics.jsm"
   ));
 });
 
@@ -294,6 +291,7 @@ add_task(async function test_regexp_list() {
     fname: null, // given-name
     mname: null, // additional-name
     lname: null, // family-name
+    cardholder: null, // cc-name
     "cc-number": null, // cc-number
     addmonth: "cc-exp-month",
     addyear: "cc-exp-year",

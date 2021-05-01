@@ -15,26 +15,20 @@ class nsLookAndFeel final : public nsXPLookAndFeel {
 
   void NativeInit() final;
   virtual void RefreshImpl() override;
-  nsresult NativeGetInt(IntID aID, int32_t& aResult) override;
-  nsresult NativeGetFloat(FloatID aID, float& aResult) override;
-  nsresult NativeGetColor(ColorID aID, nscolor& aResult) override;
+  nsresult NativeGetInt(IntID, int32_t& aResult) override;
+  nsresult NativeGetFloat(FloatID, float& aResult) override;
+  nsresult NativeGetColor(ColorID, ColorScheme, nscolor& aResult) override;
   bool NativeGetFont(FontID aID, nsString& aName,
                      gfxFontStyle& aStyle) override;
   virtual bool GetEchoPasswordImpl() override;
   virtual uint32_t GetPasswordMaskDelayImpl() override;
   virtual char16_t GetPasswordCharacterImpl() override;
- protected:
 
+ protected:
   bool mInitializedSystemColors = false;
   mozilla::AndroidSystemColors mSystemColors;
   bool mInitializedShowPassword = false;
   bool mShowPassword = false;
-
-  bool mSystemUsesDarkTheme = false;
-  bool mSystemUsesDarkThemeCached = false;
-
-  bool mPrefersReducedMotion = false;
-  bool mPrefersReducedMotionCached = false;
 
   nsresult GetSystemColors();
 

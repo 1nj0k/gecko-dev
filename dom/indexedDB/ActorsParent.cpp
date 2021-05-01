@@ -2812,11 +2812,11 @@ class TransactionBase : public AtomicSafeRefCounted<TransactionBase> {
  private:
   bool VerifyRequestParams(const RequestParams& aParams) const;
 
-  bool VerifyRequestParams(const SerializedKeyRange& aKeyRange) const;
+  bool VerifyRequestParams(const SerializedKeyRange& aParams) const;
 
   bool VerifyRequestParams(const ObjectStoreAddPutParams& aParams) const;
 
-  bool VerifyRequestParams(const Maybe<SerializedKeyRange>& aKeyRange) const;
+  bool VerifyRequestParams(const Maybe<SerializedKeyRange>& aParams) const;
 
   void CommitOrAbort();
 };
@@ -12617,7 +12617,7 @@ nsresult QuotaClient::UpgradeStorageFrom1_0To2_0(nsIFile* aDirectory) {
         nsDependentSubstring subdirNameBase;
         if (GetFilenameBase(subdirName, kFileManagerDirectoryNameSuffix,
                             subdirNameBase)) {
-          IDB_TRY(OkIf(databaseFilenames.Contains(subdirNameBase)), Ok{});
+          QM_WARNONLY_TRY(OkIf(databaseFilenames.Contains(subdirNameBase)));
           return Ok{};
         }
 

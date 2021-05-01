@@ -132,7 +132,8 @@ static inline MIRType MIRTypeFromValue(const js::Value& vp) {
    * graph, and need to be handled specially. As an example, this is used to   \
    * keep the flagged instruction in resume points, not substituting with an   \
    * UndefinedValue. This can be used by call inlining when a function         \
-   * argument is not used by the inlined instructions.                         \
+   * argument is not used by the inlined instructions. It is also used         \
+   * to annotate instructions which were used in removed branches.             \
    */                                                                          \
   _(ImplicitlyUsed)                                                            \
                                                                                \
@@ -140,21 +141,6 @@ static inline MIRType MIRTypeFromValue(const js::Value& vp) {
    * points.                                                                   \
    */                                                                          \
   _(Unused)                                                                    \
-                                                                               \
-  /* When a branch is removed, the uses of multiple instructions are removed.  \
-   * The removal of branches is based on hypotheses.  These hypotheses might   \
-   * fail, in which case we need to bailout from the current code.             \
-   *                                                                           \
-   * When we implement a destructive optimization, we need to consider the     \
-   * failing cases, and consider the fact that we might resume the execution   \
-   * into a branch which was removed from the compiler.  As such, a            \
-   * destructive optimization need to take into acount removed branches.       \
-   *                                                                           \
-   * In order to let destructive optimizations know about removed branches, we \
-   * have to annotate instructions with the UseRemoved flag.  This flag        \
-   * annotates instruction which were used in removed branches.                \
-   */                                                                          \
-  _(UseRemoved)                                                                \
                                                                                \
   /* Marks if the current instruction should go to the bailout paths instead   \
    * of producing code as part of the control flow.  This flag can only be set \
@@ -778,7 +764,8 @@ class MDefinition : public MNode {
   // uses of the current instruction.
   void replaceAllUsesWith(MDefinition* dom);
 
-  // Like replaceAllUsesWith, but doesn't set UseRemoved on |this|'s operands.
+  // Like replaceAllUsesWith, but doesn't set ImplicitlyUsed on |this|'s
+  // operands.
   void justReplaceAllUsesWith(MDefinition* dom);
 
   // Replace the current instruction by an optimized-out constant in all uses
@@ -955,6 +942,7 @@ using CompilerFunction = CompilerGCPointer<JSFunction*>;
 using CompilerBaseScript = CompilerGCPointer<BaseScript*>;
 using CompilerPropertyName = CompilerGCPointer<PropertyName*>;
 using CompilerShape = CompilerGCPointer<Shape*>;
+using CompilerGetterSetter = CompilerGCPointer<GetterSetter*>;
 
 // An instruction is an SSA name that is inserted into a basic block's IR
 // stream.
@@ -1324,6 +1312,7 @@ class MConstant : public MNullaryInstruction {
       JS::Symbol* sym;
       BigInt* bi;
       JSObject* obj;
+      Shape* shape;
       uint64_t asBits;
     };
     Payload() : asBits(0) {}
@@ -1342,6 +1331,7 @@ class MConstant : public MNullaryInstruction {
 
   MConstant(TempAllocator& alloc, const Value& v);
   explicit MConstant(JSObject* obj);
+  explicit MConstant(Shape* shape);
   explicit MConstant(float f);
   explicit MConstant(MIRType type, int64_t i);
 
@@ -1354,6 +1344,7 @@ class MConstant : public MNullaryInstruction {
   static MConstant* NewInt64(TempAllocator& alloc, int64_t i);
   static MConstant* NewIntPtr(TempAllocator& alloc, intptr_t i);
   static MConstant* NewObject(TempAllocator& alloc, JSObject* v);
+  static MConstant* NewShape(TempAllocator& alloc, Shape* s);
   static MConstant* Copy(TempAllocator& alloc, MConstant* src) {
     return new (alloc) MConstant(*src);
   }
@@ -1446,6 +1437,10 @@ class MConstant : public MNullaryInstruction {
     }
     MOZ_ASSERT(type() == MIRType::Null);
     return nullptr;
+  }
+  Shape* toShape() const {
+    MOZ_ASSERT(type() == MIRType::Shape);
+    return payload_.shape;
   }
 
   bool isTypeRepresentableAsDouble() const {
@@ -2109,6 +2104,47 @@ class MNewObject : public MUnaryInstruction, public NoTypePolicy::Data {
   }
 };
 
+class MNewPlainObject : public MUnaryInstruction, public NoTypePolicy::Data {
+ private:
+  uint32_t numFixedSlots_;
+  uint32_t numDynamicSlots_;
+  gc::AllocKind allocKind_;
+  gc::InitialHeap initialHeap_;
+
+  MNewPlainObject(TempAllocator& alloc, MConstant* shapeConst,
+                  uint32_t numFixedSlots, uint32_t numDynamicSlots,
+                  gc::AllocKind allocKind, gc::InitialHeap initialHeap)
+      : MUnaryInstruction(classOpcode, shapeConst),
+        numFixedSlots_(numFixedSlots),
+        numDynamicSlots_(numDynamicSlots),
+        allocKind_(allocKind),
+        initialHeap_(initialHeap) {
+    setResultType(MIRType::Object);
+
+    // The shape constant is kept separated in a MConstant. This way we can
+    // safely mark it during GC if we recover the object allocation. Otherwise,
+    // by making it emittedAtUses, we do not produce register allocations for it
+    // and inline its content inside the code produced by the CodeGenerator.
+    MOZ_ASSERT(shapeConst->toConstant()->type() == MIRType::Shape);
+    shapeConst->setEmittedAtUses();
+  }
+
+ public:
+  INSTRUCTION_HEADER(NewPlainObject)
+  TRIVIAL_NEW_WRAPPERS_WITH_ALLOC
+
+  const Shape* shape() const { return getOperand(0)->toConstant()->toShape(); }
+
+  uint32_t numFixedSlots() const { return numFixedSlots_; }
+  uint32_t numDynamicSlots() const { return numDynamicSlots_; }
+  gc::AllocKind allocKind() const { return allocKind_; }
+  gc::InitialHeap initialHeap() const { return initialHeap_; }
+
+  [[nodiscard]] bool writeRecoverData(
+      CompactBufferWriter& writer) const override;
+  bool canRecoverOnBailout() const override { return true; }
+};
+
 class MNewIterator : public MUnaryInstruction, public NoTypePolicy::Data {
  public:
   enum Type {
@@ -2152,6 +2188,7 @@ class MObjectState : public MVariadicInstruction,
   uint32_t numFixedSlots_;
 
   explicit MObjectState(JSObject* templateObject);
+  explicit MObjectState(const Shape* shape);
   explicit MObjectState(MObjectState* state);
 
   [[nodiscard]] bool init(TempAllocator& alloc, MDefinition* obj);
@@ -6322,9 +6359,9 @@ class MArrowNewTarget : public MUnaryInstruction,
   }
 };
 
-// This is a 3 state flag used by FlagPhiInputsAsHavingRemovedUses to record and
+// This is a 3 state flag used by FlagPhiInputsAsImplicitlyUsed to record and
 // propagate the information about the consumers of a Phi instruction. This is
-// then used to set UseRemoved flags on the inputs of such Phi instructions.
+// then used to set ImplicitlyUsed flags on the inputs of such Phi instructions.
 enum class PhiUsage : uint8_t { Unknown, Unused, Used };
 
 using PhiVector = Vector<MPhi*, 4, JitAllocPolicy>;
@@ -9183,7 +9220,8 @@ class MGuardValue : public MUnaryInstruction, public BoxInputsPolicy::Data {
 
   MGuardValue(MDefinition* val, const Value& expected)
       : MUnaryInstruction(classOpcode, val), expected_(expected) {
-    MOZ_ASSERT(expected.isNullOrUndefined() || expected.isMagic());
+    MOZ_ASSERT(expected.isNullOrUndefined() || expected.isMagic() ||
+               expected.isPrivateGCThing());
 
     setGuard();
     setMovable();
@@ -11978,10 +12016,11 @@ class MLoadWrapperTarget : public MUnaryInstruction,
 // Guard the accessor shape is present on the object or its prototype chain.
 class MGuardHasGetterSetter : public MUnaryInstruction,
                               public SingleObjectPolicy::Data {
-  CompilerShape shape_;
+  jsid propId_;
+  CompilerGetterSetter getterSetter_;
 
-  MGuardHasGetterSetter(MDefinition* obj, Shape* shape)
-      : MUnaryInstruction(classOpcode, obj), shape_(shape) {
+  MGuardHasGetterSetter(MDefinition* obj, jsid id, GetterSetter* gs)
+      : MUnaryInstruction(classOpcode, obj), propId_(id), getterSetter_(gs) {
     setResultType(MIRType::Object);
     setMovable();
     setGuard();
@@ -11992,7 +12031,8 @@ class MGuardHasGetterSetter : public MUnaryInstruction,
   TRIVIAL_NEW_WRAPPERS
   NAMED_OPERANDS((0, object))
 
-  Shape* shape() const { return shape_; }
+  jsid propId() const { return propId_; }
+  GetterSetter* getterSetter() const { return getterSetter_; }
 
   AliasSet getAliasSet() const override {
     return AliasSet::Load(AliasSet::ObjectFields);
@@ -12002,7 +12042,10 @@ class MGuardHasGetterSetter : public MUnaryInstruction,
     if (!ins->isGuardHasGetterSetter()) {
       return false;
     }
-    if (ins->toGuardHasGetterSetter()->shape() != shape()) {
+    if (ins->toGuardHasGetterSetter()->propId() != propId()) {
+      return false;
+    }
+    if (ins->toGuardHasGetterSetter()->getterSetter() != getterSetter()) {
       return false;
     }
     return congruentIfOperandsEqual(ins);

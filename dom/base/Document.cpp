@@ -290,7 +290,6 @@
 #include "nsHtml5Module.h"
 #include "nsHtml5Parser.h"
 #include "nsHtml5TreeOpExecutor.h"
-#include "nsIApplicationCache.h"
 #include "nsIAsyncShutdown.h"
 #include "nsIAuthPrompt.h"
 #include "nsIAuthPrompt2.h"
@@ -1133,7 +1132,6 @@ NS_IMPL_ISUPPORTS(ExternalResourceMap::LoadgroupCallbacks,
 IMPL_SHIM(nsILoadContext)
 IMPL_SHIM(nsIProgressEventSink)
 IMPL_SHIM(nsIChannelEventSink)
-IMPL_SHIM(nsIApplicationCacheContainer)
 
 #undef IMPL_SHIM
 
@@ -1165,7 +1163,6 @@ ExternalResourceMap::LoadgroupCallbacks::GetInterface(const nsIID& aIID,
   TRY_SHIM(nsILoadContext);
   TRY_SHIM(nsIProgressEventSink);
   TRY_SHIM(nsIChannelEventSink);
-  TRY_SHIM(nsIApplicationCacheContainer);
 
   return NS_NOINTERFACE;
 }
@@ -2239,8 +2236,6 @@ Document::~Document() {
 
   mPendingTitleChangeEvent.Revoke();
 
-  mPlugins.Clear();
-
   MOZ_ASSERT(mDOMMediaQueryLists.isEmpty(),
              "must not have media query lists left");
 
@@ -2267,7 +2262,6 @@ NS_INTERFACE_TABLE_HEAD(Document)
     NS_INTERFACE_TABLE_ENTRY(Document, EventTarget)
     NS_INTERFACE_TABLE_ENTRY(Document, nsISupportsWeakReference)
     NS_INTERFACE_TABLE_ENTRY(Document, nsIRadioGroupContainer)
-    NS_INTERFACE_TABLE_ENTRY(Document, nsIApplicationCacheContainer)
   NS_INTERFACE_TABLE_END
   NS_INTERFACE_TABLE_TO_MAP_SEGUE_CYCLE_COLLECTION(Document)
 NS_INTERFACE_MAP_END
@@ -4102,18 +4096,6 @@ bool Document::IsScriptTracking(JSContext* aCx) const {
   return mTrackingScripts.Contains(nsDependentCString(filename.get()));
 }
 
-NS_IMETHODIMP
-Document::GetApplicationCache(nsIApplicationCache** aApplicationCache) {
-  NS_IF_ADDREF(*aApplicationCache = mApplicationCache);
-  return NS_OK;
-}
-
-NS_IMETHODIMP
-Document::SetApplicationCache(nsIApplicationCache* aApplicationCache) {
-  mApplicationCache = aApplicationCache;
-  return NS_OK;
-}
-
 void Document::GetContentType(nsAString& aContentType) {
   CopyUTF8toUTF16(GetContentTypeInternal(), aContentType);
 }
@@ -5291,7 +5273,8 @@ bool Document::ExecCommand(const nsAString& aHTMLCommandName, bool aShowUI,
       return false;
     }
 
-    MOZ_ASSERT(commandData.IsPasteCommand());
+    MOZ_ASSERT(commandData.IsPasteCommand() ||
+               commandData.mCommand == Command::SelectAll);
     nsresult rv =
         commandManager->DoCommand(commandData.mXULCommandName, nullptr, window);
     return NS_SUCCEEDED(rv) && rv != NS_SUCCESS_DOM_NO_OPERATION;
@@ -6785,6 +6768,17 @@ void Document::DeletePresShell() {
   mDesignModeSheetAdded = false;
 }
 
+void Document::DisallowBFCaching() {
+  NS_ASSERTION(!mBFCacheEntry, "We're already in the bfcache!");
+  if (!mBFCacheDisallowed) {
+    WindowGlobalChild* wgc = GetWindowGlobalChild();
+    if (wgc) {
+      wgc->BlockBFCacheFor(BFCacheStatus::NOT_ALLOWED);
+    }
+  }
+  mBFCacheDisallowed = true;
+}
+
 void Document::SetBFCacheEntry(nsIBFCacheEntry* aEntry) {
   MOZ_ASSERT(IsBFCachingAllowed() || !aEntry, "You should have checked!");
 
@@ -6799,27 +6793,34 @@ void Document::SetBFCacheEntry(nsIBFCacheEntry* aEntry) {
 }
 
 bool Document::RemoveFromBFCacheSync() {
+  bool removed = false;
   if (nsCOMPtr<nsIBFCacheEntry> entry = GetBFCacheEntry()) {
     entry->RemoveFromBFCacheSync();
-    return true;
+    removed = true;
+  } else if (!IsCurrentActiveDocument()) {
+    // In the old bfcache implementation while the new page is loading, but
+    // before nsIContentViewer.show() has been called, the previous page doesn't
+    // yet have nsIBFCacheEntry. However, the previous page isn't the current
+    // active document anymore.
+    DisallowBFCaching();
+    removed = true;
   }
 
   if (XRE_IsContentProcess()) {
     if (BrowsingContext* bc = GetBrowsingContext()) {
-      BrowsingContext* top = bc->Top();
-      if (top->GetIsInBFCache()) {
+      if (bc->IsInBFCache()) {
         ContentChild* cc = ContentChild::GetSingleton();
         // IPC is asynchronous but the caller is supposed to check the return
         // value. The reason for 'Sync' in the method name is that the old
         // implementation may run scripts. There is Async variant in
         // the old session history implementation for the cases where
         // synchronous operation isn't safe.
-        cc->SendRemoveFromBFCache(top);
-        return true;
+        cc->SendRemoveFromBFCache(bc->Top());
+        removed = true;
       }
     }
   }
-  return false;
+  return removed;
 }
 
 static void SubDocClearEntry(PLDHashTable* table, PLDHashEntryHdr* entry) {
@@ -7181,16 +7182,19 @@ nsIGlobalObject* Document::GetScopeObject() const {
 }
 
 bool Document::CrossOriginIsolated() const {
-  // For a data document, it doesn't have a browsing context so that we check
-  // the cross-origin-isolated state from its creator's inner window.
+  if (auto* bc = GetBrowsingContext()) {
+    return bc->CrossOriginIsolated();
+  }
+
+  // For a data document without a browsing context we check the
+  // cross-origin-isolated state from its creator's inner window.
   if (mLoadedAsData) {
     nsCOMPtr<nsPIDOMWindowInner> window = do_QueryInterface(GetScopeObject());
-
     return window && window->GetBrowsingContext() &&
            window->GetBrowsingContext()->CrossOriginIsolated();
   }
 
-  return GetBrowsingContext() && GetBrowsingContext()->CrossOriginIsolated();
+  return false;
 }
 
 DocGroup* Document::GetDocGroupOrCreate() {
@@ -8900,6 +8904,11 @@ void Document::DoNotifyPossibleTitleChange() {
   nsContentUtils::DispatchChromeEvent(this, ToSupports(this),
                                       u"DOMTitleChanged"_ns, CanBubble::eYes,
                                       Cancelable::eYes);
+
+  nsCOMPtr<nsIObserverService> obs = mozilla::services::GetObserverService();
+  if (obs) {
+    obs->NotifyObservers(ToSupports(this), "document-title-changed", nullptr);
+  }
 }
 
 already_AddRefed<MediaQueryList> Document::MatchMedia(
@@ -10856,7 +10865,8 @@ void Document::CollectDescendantDocuments(
 
 bool Document::CanSavePresentation(nsIRequest* aNewRequest,
                                    uint16_t& aBFCacheCombo,
-                                   bool aIncludeSubdocuments) {
+                                   bool aIncludeSubdocuments,
+                                   bool aAllowUnloadListeners) {
   bool ret = true;
 
   if (!IsBFCachingAllowed()) {
@@ -10891,10 +10901,21 @@ bool Document::CanSavePresentation(nsIRequest* aNewRequest,
     ret = false;
   }
 
+  nsCOMPtr<nsIChannel> channel = do_QueryInterface(aNewRequest);
+  bool thirdParty = false;
+  // Currently some other mobile browsers seem to bfcache only cross-domain
+  // pages, but bfcache those also when there are unload event listeners, so
+  // this is trying to match that behavior as much as possible.
+  bool allowUnloadListeners =
+      aAllowUnloadListeners &&
+      StaticPrefs::docshell_shistory_bfcache_allow_unload_listeners() &&
+      (!channel || (NS_SUCCEEDED(NodePrincipal()->IsThirdPartyChannel(
+                        channel, &thirdParty)) &&
+                    thirdParty));
+
   // Check our event listener manager for unload/beforeunload listeners.
   nsCOMPtr<EventTarget> piTarget = do_QueryInterface(mScriptGlobalObject);
-  if (!StaticPrefs::docshell_shistory_bfcache_allow_unload_listeners() &&
-      piTarget) {
+  if (!allowUnloadListeners && piTarget) {
     EventListenerManager* manager = piTarget->GetExistingListenerManager();
     if (manager && manager->HasUnloadListeners()) {
       MOZ_LOG(gPageCacheLog, mozilla::LogLevel::Verbose,
@@ -10992,9 +11013,10 @@ bool Document::CanSavePresentation(nsIRequest* aNewRequest,
 
       uint16_t subDocBFCacheCombo = 0;
       // The aIgnoreRequest we were passed is only for us, so don't pass it on.
-      bool canCache = subdoc ? subdoc->CanSavePresentation(
-                                   nullptr, subDocBFCacheCombo, true)
-                             : false;
+      bool canCache =
+          subdoc ? subdoc->CanSavePresentation(nullptr, subDocBFCacheCombo,
+                                               true, allowUnloadListeners)
+                 : false;
       if (!canCache) {
         MOZ_LOG(gPageCacheLog, mozilla::LogLevel::Verbose,
                 ("Save of %s blocked due to subdocument blocked", uri.get()));
@@ -11848,6 +11870,12 @@ void Document::GetReadyState(nsAString& aReadyState) const {
 
 void Document::SuppressEventHandling(uint32_t aIncrease) {
   mEventsSuppressed += aIncrease;
+  if (mEventsSuppressed == aIncrease) {
+    WindowGlobalChild* wgc = GetWindowGlobalChild();
+    if (wgc) {
+      wgc->BlockBFCacheFor(BFCacheStatus::EVENT_HANDLING_SUPPRESSED);
+    }
+  }
   UpdateFrameRequestCallbackSchedulingState();
   for (uint32_t i = 0; i < aIncrease; ++i) {
     ScriptLoader()->AddExecuteBlocker();
@@ -12246,6 +12274,11 @@ void Document::UnsuppressEventHandlingAndFireEvents(bool aFireEvents) {
   }
 
   if (!EventHandlingSuppressed()) {
+    WindowGlobalChild* wgc = GetWindowGlobalChild();
+    if (wgc) {
+      wgc->UnblockBFCacheFor(BFCacheStatus::EVENT_HANDLING_SUPPRESSED);
+    }
+
     MOZ_ASSERT(NS_IsMainThread());
     nsTArray<RefPtr<net::ChannelEventQueue>> queues =
         std::move(mSuspendedQueues);
@@ -13012,15 +13045,6 @@ mozilla::dom::ImageTracker* Document::ImageTracker() {
     mImageTracker = new mozilla::dom::ImageTracker;
   }
   return mImageTracker;
-}
-
-void Document::GetPlugins(nsTArray<nsIObjectLoadingContent*>& aPlugins) {
-  aPlugins.AppendElements(ToArray(mPlugins));
-  auto recurse = [&aPlugins](Document& aSubDoc) {
-    aSubDoc.GetPlugins(aPlugins);
-    return CallState::Continue;
-  };
-  EnumerateSubDocuments(recurse);
 }
 
 void Document::ScheduleSVGUseElementShadowTreeUpdate(
@@ -15081,7 +15105,7 @@ WindowContext* Document::GetTopLevelWindowContext() const {
   return windowContext ? windowContext->TopWindowContext() : nullptr;
 }
 
-Document* Document::GetTopLevelContentDocument() {
+Document* Document::GetTopLevelContentDocumentIfSameProcess() {
   Document* parent;
 
   if (!mLoadedAsData) {
@@ -15115,38 +15139,8 @@ Document* Document::GetTopLevelContentDocument() {
   return parent;
 }
 
-const Document* Document::GetTopLevelContentDocument() const {
-  const Document* parent;
-
-  if (!mLoadedAsData) {
-    parent = this;
-  } else {
-    nsCOMPtr<nsPIDOMWindowInner> window = do_QueryInterface(GetScopeObject());
-    if (!window) {
-      return nullptr;
-    }
-
-    parent = window->GetExtantDoc();
-    if (!parent) {
-      return nullptr;
-    }
-  }
-
-  do {
-    if (parent->IsTopLevelContentDocument()) {
-      break;
-    }
-
-    // If we ever have a non-content parent before we hit a toplevel content
-    // parent, then we're never going to find one.  Just bail.
-    if (!parent->IsContentDocument()) {
-      return nullptr;
-    }
-
-    parent = parent->GetInProcessParentDocument();
-  } while (parent);
-
-  return parent;
+const Document* Document::GetTopLevelContentDocumentIfSameProcess() const {
+  return const_cast<Document*>(this)->GetTopLevelContentDocumentIfSameProcess();
 }
 
 void Document::PropagateImageUseCounters(Document* aReferencingDocument) {
@@ -15851,7 +15845,7 @@ void Document::IncLazyLoadImageCount() {
   if (!mLazyLoadImageCount) {
     if (WindowContext* wc = GetTopLevelWindowContext()) {
       if (!wc->HadLazyLoadImage()) {
-        MOZ_ALWAYS_SUCCEEDS(wc->SetHadLazyLoadImage(true));
+        Unused << wc->SetHadLazyLoadImage(true);
       }
     }
   }
@@ -17259,6 +17253,25 @@ void Document::EnableChildElementInPictureInPictureMode() {
 void Document::DisableChildElementInPictureInPictureMode() {
   mPictureInPictureChildElementCount--;
   MOZ_ASSERT(mPictureInPictureChildElementCount >= 0);
+}
+
+void Document::AddMediaElementWithMSE() {
+  if (mMediaElementWithMSECount++ == 0) {
+    WindowGlobalChild* wgc = GetWindowGlobalChild();
+    if (wgc) {
+      wgc->BlockBFCacheFor(BFCacheStatus::CONTAINS_MSE_CONTENT);
+    }
+  }
+}
+
+void Document::RemoveMediaElementWithMSE() {
+  MOZ_ASSERT(mMediaElementWithMSECount > 0);
+  if (--mMediaElementWithMSECount == 0) {
+    WindowGlobalChild* wgc = GetWindowGlobalChild();
+    if (wgc) {
+      wgc->UnblockBFCacheFor(BFCacheStatus::CONTAINS_MSE_CONTENT);
+    }
+  }
 }
 
 }  // namespace mozilla::dom

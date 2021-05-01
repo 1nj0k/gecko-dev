@@ -524,6 +524,9 @@ class ScriptSource {
                       CompressedData<char16_t>>
       pendingCompressed_;
 
+  // True if an associated SourceCompressionTask was ever created.
+  bool hadCompressionTask_ = false;
+
   // The filename of this script.
   mozilla::Maybe<SharedImmutableString> filename_;
 
@@ -885,6 +888,10 @@ class ScriptSource {
 
   [[nodiscard]] bool tryCompressOffThread(JSContext* cx);
 
+  // Called by the SourceCompressionTask constructor to indicate such a task was
+  // ever created.
+  void noteSourceCompressionTask() { hadCompressionTask_ = true; }
+
   // *Trigger* the conversion of this ScriptSource from containing uncompressed
   // |Unit|-encoded source to containing compressed source.  Conversion may not
   // be complete when this function returns: it'll be delayed if there's ongoing
@@ -1109,12 +1116,14 @@ class ScriptSourceObject : public NativeObject {
   JSObject* unwrappedElement(JSContext* cx) const;
 
   const Value& unwrappedElementAttributeName() const {
+    MOZ_ASSERT(isInitialized());
     const Value& v =
         unwrappedCanonical()->getReservedSlot(ELEMENT_PROPERTY_SLOT);
     MOZ_ASSERT(!v.isMagic());
     return v;
   }
   BaseScript* unwrappedIntroductionScript() const {
+    MOZ_ASSERT(isInitialized());
     Value value =
         unwrappedCanonical()->getReservedSlot(INTRODUCTION_SCRIPT_SLOT);
     if (value.isUndefined()) {
@@ -1125,13 +1134,35 @@ class ScriptSourceObject : public NativeObject {
 
   void setPrivate(JSRuntime* rt, const Value& value);
 
+  void setIntroductionScript(const Value& introductionScript) {
+    setReservedSlot(INTRODUCTION_SCRIPT_SLOT, introductionScript);
+  }
+
   Value canonicalPrivate() const {
+    MOZ_ASSERT(isInitialized());
     Value value = getReservedSlot(PRIVATE_SLOT);
     MOZ_ASSERT_IF(!isCanonical(), value.isUndefined());
     return value;
   }
 
  private:
+#ifdef DEBUG
+  bool isInitialized() const {
+    if (!isCanonical()) {
+      // While it might be nice to check the unwrapped canonical value,
+      // unwrapping at arbitrary points isn't supported, so we simply
+      // return true and only validate canonical results.
+      return true;
+    }
+
+    Value element = getReservedSlot(ELEMENT_PROPERTY_SLOT);
+    if (element.isMagic(JS_GENERIC_MAGIC)) {
+      return false;
+    }
+    return !getReservedSlot(INTRODUCTION_SCRIPT_SLOT).isMagic(JS_GENERIC_MAGIC);
+  }
+#endif
+
   enum {
     SOURCE_SLOT = 0,
     CANONICAL_SLOT,
@@ -1621,6 +1652,7 @@ class BaseScript : public gc::TenuredCellWithNonGCPointer<uint8_t> {
   IMMUTABLE_FLAG_GETTER(argumentsHasVarBinding, ArgumentsHasVarBinding)
   IMMUTABLE_FLAG_GETTER(alwaysNeedsArgsObj, AlwaysNeedsArgsObj)
   IMMUTABLE_FLAG_GETTER(hasMappedArgsObj, HasMappedArgsObj)
+  IMMUTABLE_FLAG_GETTER(isInlinableLargeFunction, IsInlinableLargeFunction)
 
   MUTABLE_FLAG_GETTER_SETTER(hasRunOnce, HasRunOnce)
   MUTABLE_FLAG_GETTER_SETTER(hasScriptCounts, HasScriptCounts)
@@ -1639,7 +1671,6 @@ class BaseScript : public gc::TenuredCellWithNonGCPointer<uint8_t> {
   MUTABLE_FLAG_GETTER_SETTER(uninlineable, Uninlineable)
   MUTABLE_FLAG_GETTER_SETTER(failedLexicalCheck, FailedLexicalCheck)
   MUTABLE_FLAG_GETTER_SETTER(hadSpeculativePhiBailout, HadSpeculativePhiBailout)
-  MUTABLE_FLAG_GETTER_SETTER(isInlinableLargeFunction, IsInlinableLargeFunction)
 
 #undef IMMUTABLE_FLAG_GETTER
 #undef MUTABLE_FLAG_GETTER_SETTER

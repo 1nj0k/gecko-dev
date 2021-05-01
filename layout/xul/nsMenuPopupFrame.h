@@ -14,7 +14,6 @@
 #include "mozilla/Attributes.h"
 #include "mozilla/gfx/Types.h"
 #include "mozilla/StaticPrefs_ui.h"
-#include "mozilla/widget/NativeMenu.h"
 #include "nsAtom.h"
 #include "nsGkAtoms.h"
 #include "nsCOMPtr.h"
@@ -33,48 +32,6 @@ namespace dom {
 class KeyboardEvent;
 }  // namespace dom
 }  // namespace mozilla
-
-// XUL popups can be in several different states. When opening a popup, the
-// state changes as follows:
-//   ePopupClosed - initial state
-//   ePopupShowing - during the period when the popupshowing event fires
-//   ePopupOpening - between the popupshowing event and being visible. Creation
-//                   of the child frames, layout and reflow occurs in this
-//                   state. The popup is stored in the popup manager's list of
-//                   open popups during this state.
-//   ePopupVisible - layout is done and the popup's view and widget are made
-//                   visible. The popup is visible on screen but may be
-//                   transitioning. The popupshown event has not yet fired.
-//   ePopupShown - the popup has been shown and is fully ready. This state is
-//                 assigned just before the popupshown event fires.
-// When closing a popup:
-//   ePopupHidden - during the period when the popuphiding event fires and
-//                  the popup is removed.
-//   ePopupClosed - the popup's widget is made invisible.
-enum nsPopupState {
-  // state when a popup is not open
-  ePopupClosed,
-  // state from when a popup is requested to be shown to after the
-  // popupshowing event has been fired.
-  ePopupShowing,
-  // state while a popup is waiting to be laid out and positioned
-  ePopupPositioning,
-  // state while a popup is open but the widget is not yet visible
-  ePopupOpening,
-  // state while a popup is visible and waiting for the popupshown event
-  ePopupVisible,
-  // state while a popup is open and visible on screen
-  ePopupShown,
-  // state from when a popup is requested to be hidden to when it is closed.
-  ePopupHiding,
-  // state which indicates that the popup was hidden without firing the
-  // popuphiding or popuphidden events. It is used when executing a menu
-  // command because the menu needs to be hidden before the command event
-  // fires, yet the popuphiding and popuphidden events are fired after. This
-  // state can also occur when the popup is removed because the document is
-  // unloaded.
-  ePopupInvisible
-};
 
 enum ConsumeOutsideClicksResult {
   ConsumeOutsideClicks_ParentOnly =
@@ -168,8 +125,7 @@ class nsXULPopupShownEvent final : public mozilla::Runnable,
 
 class nsMenuPopupFrame final : public nsBoxFrame,
                                public nsMenuParent,
-                               public nsIReflowCallback,
-                               public mozilla::widget::NativeMenu::Observer {
+                               public nsIReflowCallback {
  public:
   NS_DECL_QUERYFRAME
   NS_DECL_FRAMEARENA_HELPERS(nsMenuPopupFrame)
@@ -288,6 +244,7 @@ class nsMenuPopupFrame final : public nsBoxFrame,
   bool IsVisible() {
     return mPopupState == ePopupVisible || mPopupState == ePopupShown;
   }
+  bool IsNativeMenu() { return mIsNativeMenu; }
 
   // Return true if the popup is for a menulist.
   bool IsMenuList();
@@ -296,6 +253,7 @@ class nsMenuPopupFrame final : public nsBoxFrame,
 
   static nsIContent* GetTriggerContent(nsMenuPopupFrame* aMenuPopupFrame);
   void ClearTriggerContent() { mTriggerContent = nullptr; }
+  void ClearTriggerContentIncludingDocument();
 
   // returns true if the popup is in a content shell, or false for a popup in
   // a chrome shell
@@ -321,14 +279,8 @@ class nsMenuPopupFrame final : public nsBoxFrame,
                                int32_t aYPos, bool aIsContextMenu);
 
   // Called if this popup should be displayed as an OS-native context menu.
-  // This is achieved with the help of mNativeMenu.
-  // Returns whether the native context menu was created successfully.
-  bool InitializePopupAsNativeContextMenu(nsIContent* aTriggerContent,
+  void InitializePopupAsNativeContextMenu(nsIContent* aTriggerContent,
                                           int32_t aXPos, int32_t aYPos);
-
-  // Must only be called after a call to InitializePopupAsNativeContextMenu
-  // that returned true.
-  void ShowNativeMenu();
 
   // indicate that the popup should be opened
   void ShowPopup(bool aIsContextMenu);
@@ -456,10 +408,6 @@ class nsMenuPopupFrame final : public nsBoxFrame,
   virtual bool ReflowFinished() override;
   virtual void ReflowCallbackCanceled() override;
 
-  // NativeMenu::Observer
-  void OnNativeMenuOpened() override {}
-  void OnNativeMenuClosed() override;
-
  protected:
   // returns the popup's level.
   nsPopupLevel PopupLevel(bool aIsNoAutoHide) const;
@@ -578,11 +526,6 @@ class nsMenuPopupFrame final : public nsBoxFrame,
  protected:
   nsString mIncrementalString;  // for incremental typing navigation
 
-  // If this popup is displayed as a native menu, this is non-null while the
-  // native menu is open.
-  // mNativeMenu has a strong reference to the menupopup nsIContent.
-  RefPtr<mozilla::widget::NativeMenu> mNativeMenu;
-
   // the content that the popup is anchored to, if any, which may be in a
   // different document than the popup.
   nsCOMPtr<nsIContent> mAnchorContent;
@@ -684,6 +627,10 @@ class nsMenuPopupFrame final : public nsBoxFrame,
   // the flip modes that were used when the popup was opened
   bool mHFlip;
   bool mVFlip;
+
+  // Whether the most recent initialization of this menupopup happened via
+  // InitializePopupAsNativeContextMenu.
+  bool mIsNativeMenu = false;
 
   // Whether we have a pending `popuppositioned` event.
   bool mPendingPositionedEvent = false;

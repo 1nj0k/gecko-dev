@@ -87,9 +87,10 @@ nsresult SetServerURL(const nsACString& aServerURL);
 bool GetMinidumpPath(nsAString& aPath);
 nsresult SetMinidumpPath(const nsAString& aPath);
 
-// AnnotateCrashReport, RemoveCrashReportAnnotation and
-// AppendAppNotesToCrashReport may be called from any thread in a chrome
-// process, but may only be called from the main thread in a content process.
+// These functions are thread safe and can be called in both the parent and
+// child processes. Annotations added in the main process will be included in
+// child process crashes too unless the child process sets its own annotations.
+// If it does the child-provided annotation overrides the one set in the parent.
 nsresult AnnotateCrashReport(Annotation key, bool data);
 nsresult AnnotateCrashReport(Annotation key, int data);
 nsresult AnnotateCrashReport(Annotation key, unsigned int data);
@@ -100,7 +101,7 @@ nsresult AppendAppNotesToCrashReport(const nsACString& data);
 // RAII class for setting a crash annotation during a limited scope of time.
 // Will reset the named annotation to its previous value when destroyed.
 //
-// This type is subject to the same restrictions as AnnotateCrashReport.
+// This type's behavior is identical to that of AnnotateCrashReport().
 class MOZ_RAII AutoAnnotateCrashReport final {
  public:
   AutoAnnotateCrashReport(Annotation key, bool data);
@@ -169,17 +170,6 @@ nsresult SetSubmitReports(bool aSubmitReport);
 // from off the main thread, this method will synchronously proxy to the main
 // thread.
 void OOPInit();
-
-/*
- * Takes a minidump for the current process and returns the dump file.
- * Callers are responsible for managing the resulting file.
- *
- * @param aResult - file pointer that holds the resulting minidump.
- * @param aMoveToPending - if true move the report to the report
- *   pending directory.
- * @returns boolean indicating success or failure.
- */
-bool TakeMinidump(nsIFile** aResult, bool aMoveToPending = false);
 
 // Return true if a dump was found for |childPid|, and return the
 // path in |dump|.  The caller owns the last reference to |dump| if it

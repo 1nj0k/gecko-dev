@@ -148,7 +148,7 @@ var closeRDM = async function(tab, options) {
  *     async function preTask({ message, browser }) {
  *       // Your pre-task goes here...
  *     },
- *     async function task({ ui, manager, message, browser, preTaskValue }) {
+ *     async function task({ ui, manager, message, browser, preTaskValue, tab }) {
  *       // Your task goes here...
  *     },
  *     async function postTask({ message, browser, preTaskValue, taskValue }) {
@@ -195,6 +195,7 @@ function addRDMTaskWithPreAndPost(url, preTask, task, postTask, options) {
         message,
         browser,
         preTaskValue,
+        tab,
       });
     } catch (err) {
       ok(false, "Got an error: " + DevToolsUtils.safeErrorString(err));
@@ -639,7 +640,8 @@ async function testTouchEventsOverride(ui, expected) {
   const { document } = ui.toolWindow;
   const touchButton = document.getElementById("touch-simulation-button");
 
-  const flag = await ui.responsiveFront.getTouchEventsOverride();
+  const flag = gBrowser.selectedBrowser.browsingContext.touchEventsOverride;
+
   is(
     flag === "enabled",
     expected,
@@ -939,30 +941,54 @@ async function waitForDeviceAndViewportState(ui) {
  *        The ResponsiveUI instance.
  * @param {Integer} expected
  *        The expected dpr for the content page.
+ * @param {Object} options
+ * @param {Boolean} options.waitForTargetConfiguration
+ *        If set to true, the function will wait for the targetConfigurationCommand configuration
+ *        to reflect the ratio that was set. This can be used to prevent pending requests
+ *        to the actor.
  */
-function waitForDevicePixelRatio(ui, expected) {
-  return SpecialPowers.spawn(ui.getViewportBrowser(), [{ expected }], function(
-    args
-  ) {
-    const initial = content.devicePixelRatio;
-    info(
-      `Listening for pixel ratio change ` +
-        `(current: ${initial}, expected: ${args.expected})`
-    );
-    return new Promise(resolve => {
-      const mql = content.matchMedia(`(resolution: ${args.expected}dppx)`);
-      if (mql.matches) {
-        info(`Ratio already changed to ${args.expected}dppx`);
-        resolve(content.devicePixelRatio);
-        return;
-      }
-      mql.addListener(function listener() {
-        info(`Ratio changed to ${args.expected}dppx`);
-        mql.removeListener(listener);
-        resolve(content.devicePixelRatio);
+async function waitForDevicePixelRatio(
+  ui,
+  expected,
+  { waitForTargetConfiguration } = {}
+) {
+  const dpx = await SpecialPowers.spawn(
+    ui.getViewportBrowser(),
+    [{ expected }],
+    function(args) {
+      const initial = content.devicePixelRatio;
+      info(
+        `Listening for pixel ratio change ` +
+          `(current: ${initial}, expected: ${args.expected})`
+      );
+      return new Promise(resolve => {
+        const mql = content.matchMedia(`(resolution: ${args.expected}dppx)`);
+        if (mql.matches) {
+          info(`Ratio already changed to ${args.expected}dppx`);
+          resolve(content.devicePixelRatio);
+          return;
+        }
+        mql.addListener(function listener() {
+          info(`Ratio changed to ${args.expected}dppx`);
+          mql.removeListener(listener);
+          resolve(content.devicePixelRatio);
+        });
       });
+    }
+  );
+
+  if (waitForTargetConfiguration) {
+    // Ensure the configuration was updated so we limit the risk of the client closing before
+    // the server sent back the result of the updateConfiguration call.
+    await waitFor(() => {
+      return (
+        ui.commands.targetConfigurationCommand.configuration.overrideDPPX ===
+        expected
+      );
     });
-  });
+  }
+
+  return dpx;
 }
 
 /**

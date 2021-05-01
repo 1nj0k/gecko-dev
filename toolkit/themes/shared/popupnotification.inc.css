@@ -48,10 +48,6 @@
   display: none;
 }
 
-.popup-notification-learnmore-link {
-  margin-top: .5em !important;
-}
-
 .popup-notification-button-container {
   display: flex;
 }
@@ -70,6 +66,7 @@
 
 .popup-notification-button {
   flex: 1;
+  margin-bottom: 0;
 }
 
 .popup-notification-primary-button {
@@ -80,10 +77,14 @@
   flex: 1;
 }
 
-@supports not -moz-bool-pref("browser.proton.doorhangers.enabled") {
+@media not (-moz-proton-doorhangers) {
 .popup-notification-dropmarker {
   flex: none;
   padding: 0 15px !important;
+}
+
+.popup-notification-learnmore-link {
+  margin-top: .5em !important;
 }
 } /** END not Proton **/
 
@@ -112,7 +113,7 @@
 }
 
 /** PopupNotifications **/
-@supports -moz-bool-pref("browser.proton.doorhangers.enabled") {
+@media (-moz-proton-doorhangers) {
 popupnotification {
   font: caption;
 }
@@ -153,6 +154,7 @@ popupnotification {
 }
 
 .panel-footer.panel-footer-menulike > button > .button-box {
+  padding: 0;
   display: inline;
 }
 
@@ -172,7 +174,7 @@ popupnotification {
 }
 
 .panel-footer > button {
-  color: var(--button-color);
+  color: var(--button-color, inherit);
 }
 
 .panel-footer:not(.panel-footer-menulike) > button {
@@ -193,16 +195,11 @@ popupnotification {
 }
 
 .panel-footer > button:not([disabled]):hover:active {
-  /**
-   * We override the colour here because on macOS, buttons default to
-   * having :hover:active buttons have color -moz-mac-buttonactivetext
-   */
-  color: var(--button-color);
   background-color: var(--button-active-bgcolor, color-mix(in srgb, currentColor 30%, transparent));
 }
 
 .panel-footer > button:not([disabled])[default] {
-  color: var(--buttons-primary-button-color, -moz-accent-color-foreground) !important;
+  color: var(--buttons-primary-button-color, -moz-accent-color-foreground);
   background-color: var(--buttons-primary-button-bgcolor, -moz-accent-color);
 }
 
@@ -223,6 +220,10 @@ popupnotification {
   flex: unset;
 }
 
+.popup-notification-secondary-button[hidden="true"] ~ .popup-notification-primary-button {
+  flex: none;
+}
+
 .panel-footer > .popup-notification-secondary-button:not([dropmarkerhidden="true"]) {
   border-start-end-radius: 0;
   border-end-end-radius: 0;
@@ -235,6 +236,7 @@ popupnotification {
 .popup-notification-icon {
   height: 16px;
   width: 16px;
+  margin-inline-end: 6px;
 }
 
 .popup-notification-checkbox > .checkbox-label-box > .checkbox-label {
@@ -248,5 +250,6 @@ popupnotification {
 
 .popup-notification-learnmore-link {
   text-decoration: underline;
+  margin-block: 0 8px;
 }
 } /*** END proton ***/

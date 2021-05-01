@@ -590,8 +590,7 @@ class InterpreterFrame {
    */
 
   JSFunction& callee() const {
-    MOZ_ASSERT(isFunctionFrame() || isModuleFrame());
-    MOZ_ASSERT_IF(isModuleFrame(), script()->isAsync());
+    MOZ_ASSERT(isFunctionFrame());
     return calleev().toObject().as<JSFunction>();
   }
 
@@ -883,7 +882,7 @@ class GenericArgsBase
   explicit GenericArgsBase(JSContext* cx) : v_(cx) {}
 
  public:
-  bool init(JSContext* cx, unsigned argc) {
+  bool init(JSContext* cx, uint64_t argc) {
     if (argc > ARGS_LENGTH_MAX) {
       JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
                                 JSMSG_TOO_MANY_ARGUMENTS);

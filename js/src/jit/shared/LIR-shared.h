@@ -415,6 +415,25 @@ class LNewObject : public LInstructionHelper<1, 0, 1> {
   MNewObject* mir() const { return mir_->toNewObject(); }
 };
 
+class LNewPlainObject : public LInstructionHelper<1, 0, 3> {
+ public:
+  LIR_HEADER(NewPlainObject)
+
+  explicit LNewPlainObject(const LDefinition& temp0, const LDefinition& temp1,
+                           const LDefinition& temp2)
+      : LInstructionHelper(classOpcode) {
+    setTemp(0, temp0);
+    setTemp(1, temp1);
+    setTemp(2, temp2);
+  }
+
+  const LDefinition* temp0() { return getTemp(0); }
+  const LDefinition* temp1() { return getTemp(1); }
+  const LDefinition* temp2() { return getTemp(2); }
+
+  MNewPlainObject* mir() const { return mir_->toNewPlainObject(); }
+};
+
 // Allocates a new NamedLambdaObject.
 //
 // This instruction generates two possible instruction sets:
@@ -8650,21 +8669,23 @@ class LLoadWrapperTarget : public LInstructionHelper<1, 1, 0> {
   const LAllocation* object() { return getOperand(0); }
 };
 
-class LGuardHasGetterSetter : public LCallInstructionHelper<0, 1, 2> {
+class LGuardHasGetterSetter : public LCallInstructionHelper<0, 1, 3> {
  public:
   LIR_HEADER(GuardHasGetterSetter)
 
   LGuardHasGetterSetter(const LAllocation& object, const LDefinition& temp1,
-                        const LDefinition& temp2)
+                        const LDefinition& temp2, const LDefinition& temp3)
       : LCallInstructionHelper(classOpcode) {
     setOperand(0, object);
     setTemp(0, temp1);
     setTemp(1, temp2);
+    setTemp(2, temp3);
   }
 
   const LAllocation* object() { return getOperand(0); }
   const LDefinition* temp1() { return getTemp(0); }
   const LDefinition* temp2() { return getTemp(1); }
+  const LDefinition* temp3() { return getTemp(2); }
 
   MGuardHasGetterSetter* mir() const { return mir_->toGuardHasGetterSetter(); }
 };

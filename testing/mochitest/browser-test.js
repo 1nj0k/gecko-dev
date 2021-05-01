@@ -627,6 +627,10 @@ Tester.prototype = {
         );
       }
 
+      this.resolveFinishTestPromise();
+      this.resolveFinishTestPromise = null;
+      this.TestUtils.promiseTestFinished = null;
+
       this.PromiseTestUtils.ensureDOMPromiseRejectionsProcessed();
       this.PromiseTestUtils.assertNoUncaughtRejections();
       this.PromiseTestUtils.assertNoMoreExpectedRejections();
@@ -1050,6 +1054,9 @@ Tester.prototype = {
     // Import the test script.
     try {
       this.lastStartTimestamp = performance.now();
+      this.TestUtils.promiseTestFinished = new Promise(resolve => {
+        this.resolveFinishTestPromise = resolve;
+      });
       this._scriptLoader.loadSubScript(this.currentTest.path, scope);
       // Run the test
       this.lastStartTime = Date.now();
@@ -1259,7 +1266,10 @@ function testResult({ name, pass, todo, ex, stack, allowFailure }) {
   if (allowFailure && !pass) {
     this.allowedFailure = true;
     this.pass = true;
-    this.todo = true;
+    this.todo = false;
+  } else if (allowFailure && pass) {
+    this.pass = true;
+    this.todo = false;
   } else {
     this.pass = !!pass;
     this.todo = todo;

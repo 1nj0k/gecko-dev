@@ -13,6 +13,9 @@
 #include "mozilla/StaticPrefs_widget.h"
 #include "WidgetUtilsGtk.h"
 
+struct _GdkSeat;
+typedef struct _GdkSeat GdkSeat;
+
 namespace mozilla {
 namespace widget {
 
@@ -98,7 +101,27 @@ void nsWaylandDisplay::SetDataDeviceManager(
   mDataDeviceManager = aDataDeviceManager;
 }
 
-void nsWaylandDisplay::SetSeat(wl_seat* aSeat) { mSeat = aSeat; }
+wl_seat* nsWaylandDisplay::GetSeat() {
+  GdkDisplay* gdkDisplay = gdk_display_get_default();
+  if (!gdkDisplay) {
+    return nullptr;
+  }
+
+  static auto sGdkDisplayGetDefaultSeat = (GdkSeat * (*)(GdkDisplay*))
+      dlsym(RTLD_DEFAULT, "gdk_display_get_default_seat");
+  if (!sGdkDisplayGetDefaultSeat) {
+    return nullptr;
+  }
+
+  static auto sGdkWaylandSeatGetWlSeat = (struct wl_seat * (*)(GdkSeat*))
+      dlsym(RTLD_DEFAULT, "gdk_wayland_seat_get_wl_seat");
+  if (!sGdkWaylandSeatGetWlSeat) {
+    return nullptr;
+  }
+
+  GdkSeat* gdkSeat = sGdkDisplayGetDefaultSeat(gdkDisplay);
+  return sGdkWaylandSeatGetWlSeat(gdkSeat);
+}
 
 void nsWaylandDisplay::SetPrimarySelectionDeviceManager(
     gtk_primary_selection_device_manager* aPrimarySelectionDeviceManager) {
@@ -113,6 +136,20 @@ void nsWaylandDisplay::SetPrimarySelectionDeviceManager(
 void nsWaylandDisplay::SetIdleInhibitManager(
     zwp_idle_inhibit_manager_v1* aIdleInhibitManager) {
   mIdleInhibitManager = aIdleInhibitManager;
+}
+
+void nsWaylandDisplay::SetViewporter(wp_viewporter* aViewporter) {
+  mViewporter = aViewporter;
+}
+
+void nsWaylandDisplay::SetRelativePointerManager(
+    zwp_relative_pointer_manager_v1* aRelativePointerManager) {
+  mRelativePointerManager = aRelativePointerManager;
+}
+
+void nsWaylandDisplay::SetPointerConstraints(
+    zwp_pointer_constraints_v1* aPointerConstraints) {
+  mPointerConstraints = aPointerConstraints;
 }
 
 static void global_registry_handler(void* data, wl_registry* registry,
@@ -135,11 +172,6 @@ static void global_registry_handler(void* data, wl_registry* registry,
     wl_proxy_set_queue((struct wl_proxy*)data_device_manager,
                        display->GetEventQueue());
     display->SetDataDeviceManager(data_device_manager);
-  } else if (strcmp(interface, "wl_seat") == 0) {
-    auto* seat =
-        WaylandRegistryBind<wl_seat>(registry, id, &wl_seat_interface, 1);
-    wl_proxy_set_queue((struct wl_proxy*)seat, display->GetEventQueue());
-    display->SetSeat(seat);
   } else if (strcmp(interface, "gtk_primary_selection_device_manager") == 0) {
     auto* primary_selection_device_manager =
         WaylandRegistryBind<gtk_primary_selection_device_manager>(
@@ -163,6 +195,19 @@ static void global_registry_handler(void* data, wl_registry* registry,
     wl_proxy_set_queue((struct wl_proxy*)idle_inhibit_manager,
                        display->GetEventQueue());
     display->SetIdleInhibitManager(idle_inhibit_manager);
+  } else if (strcmp(interface, "zwp_relative_pointer_manager_v1") == 0) {
+    auto* relative_pointer_manager =
+        WaylandRegistryBind<zwp_relative_pointer_manager_v1>(
+            registry, id, &zwp_relative_pointer_manager_v1_interface, 1);
+    wl_proxy_set_queue((struct wl_proxy*)relative_pointer_manager,
+                       display->GetEventQueue());
+    display->SetRelativePointerManager(relative_pointer_manager);
+  } else if (strcmp(interface, "zwp_pointer_constraints_v1") == 0) {
+    auto* pointer_constraints = WaylandRegistryBind<zwp_pointer_constraints_v1>(
+        registry, id, &zwp_pointer_constraints_v1_interface, 1);
+    wl_proxy_set_queue((struct wl_proxy*)pointer_constraints,
+                       display->GetEventQueue());
+    display->SetPointerConstraints(pointer_constraints);
   } else if (strcmp(interface, "wl_compositor") == 0) {
     // Requested wl_compositor version 4 as we need wl_surface_damage_buffer().
     auto* compositor = WaylandRegistryBind<wl_compositor>(
@@ -175,6 +220,11 @@ static void global_registry_handler(void* data, wl_registry* registry,
     wl_proxy_set_queue((struct wl_proxy*)subcompositor,
                        display->GetEventQueue());
     display->SetSubcompositor(subcompositor);
+  } else if (strcmp(interface, "wp_viewporter") == 0) {
+    auto* viewporter = WaylandRegistryBind<wp_viewporter>(
+        registry, id, &wp_viewporter_interface, 1);
+    wl_proxy_set_queue((struct wl_proxy*)viewporter, display->GetEventQueue());
+    display->SetViewporter(viewporter);
   }
 }
 
@@ -239,6 +289,10 @@ void nsWaylandDisplay::QueueSyncBegin() {
 }
 
 void nsWaylandDisplay::WaitForSyncEnd() {
+  MOZ_RELEASE_ASSERT(
+      NS_IsMainThread(),
+      "nsWaylandDisplay::WaitForSyncEnd() can be called in main thread only!");
+
   // We're done here
   if (!mSyncCallback) {
     return;
@@ -266,13 +320,15 @@ nsWaylandDisplay::nsWaylandDisplay(wl_display* aDisplay, bool aLighWrapper)
       mDataDeviceManager(nullptr),
       mCompositor(nullptr),
       mSubcompositor(nullptr),
-      mSeat(nullptr),
       mShm(nullptr),
       mSyncCallback(nullptr),
       mPrimarySelectionDeviceManagerGtk(nullptr),
       mPrimarySelectionDeviceManagerZwpV1(nullptr),
       mIdleInhibitManager(nullptr),
+      mRelativePointerManager(nullptr),
+      mPointerConstraints(nullptr),
       mRegistry(nullptr),
+      mViewporter(nullptr),
       mExplicitSync(false) {
   if (!aLighWrapper) {
     mRegistry = wl_display_get_registry(mDisplay);

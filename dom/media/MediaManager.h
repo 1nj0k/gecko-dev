@@ -58,7 +58,7 @@ class PrincipalInfo;
 class GetUserMediaTask;
 class GetUserMediaWindowListener;
 class MediaManager;
-class SourceListener;
+class DeviceListener;
 
 class MediaDevice : public nsIMediaDevice {
  public:
@@ -83,7 +83,7 @@ class MediaDevice : public nsIMediaDevice {
 
   uint32_t GetBestFitnessDistance(
       const nsTArray<const NormalizedConstraintSet*>& aConstraintSets,
-      bool aIsChrome);
+      dom::CallerType aCallerType);
 
   nsresult Allocate(const dom::MediaTrackConstraints& aConstraints,
                     const MediaEnginePrefs& aPrefs, uint64_t aWindowId,
@@ -138,7 +138,7 @@ typedef MozPromise<RefPtr<AudioDeviceInfo>, nsresult, true> SinkInfoPromise;
 class MediaManager final : public nsIMediaManagerService,
                            public nsIMemoryReporter,
                            public nsIObserver {
-  friend SourceListener;
+  friend DeviceListener;
 
  public:
   static already_AddRefed<MediaManager> GetInstance();
@@ -219,7 +219,9 @@ class MediaManager final : public nsIMediaManagerService,
 
   using StreamPromise =
       MozPromise<RefPtr<DOMMediaStream>, RefPtr<MediaMgrError>, true>;
-  using DevicesPromise =
+  using DevicePromise =
+      MozPromise<RefPtr<MediaDevice>, RefPtr<MediaMgrError>, true>;
+  using DeviceSetPromise =
       MozPromise<RefPtr<MediaDeviceSetRefCnt>, RefPtr<MediaMgrError>, true>;
   using MgrPromise = MozPromise<bool, RefPtr<MediaMgrError>, true>;
   using BadConstraintsPromise =
@@ -235,8 +237,8 @@ class MediaManager final : public nsIMediaManagerService,
       nsPIDOMWindowInner* aWindow,
       dom::MozGetUserMediaDevicesSuccessCallback& aOnSuccess,
       uint64_t aInnerWindowID = 0, const nsAString& aCallID = nsString());
-  RefPtr<DevicesPromise> EnumerateDevices(nsPIDOMWindowInner* aWindow,
-                                          dom::CallerType aCallerType);
+  RefPtr<DeviceSetPromise> EnumerateDevices(nsPIDOMWindowInner* aWindow,
+                                            dom::CallerType aCallerType);
 
   nsresult EnumerateDevices(nsPIDOMWindowInner* aWindow,
                             dom::Promise& aPromise);
@@ -317,7 +319,8 @@ class MediaManager final : public nsIMediaManagerService,
       const RefPtr<MediaDeviceSetRefCnt>& aOutDevices);
 
   RefPtr<BadConstraintsPromise> SelectSettings(
-      const dom::MediaStreamConstraints& aConstraints, bool aIsChrome,
+      const dom::MediaStreamConstraints& aConstraints,
+      dom::CallerType aCallerType,
       const RefPtr<MediaDeviceSetRefCnt>& aSources);
 
   void GetPref(nsIPrefBranch* aBranch, const char* aPref, const char* aData,

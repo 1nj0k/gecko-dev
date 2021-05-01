@@ -226,15 +226,6 @@ class Raptor(
                 },
             ],
             [
-                ["--no-conditioned-profile"],
-                {
-                    "action": "store_true",
-                    "dest": "no_conditioned_profile",
-                    "default": False,
-                    "help": "Run without the conditioned profile.",
-                },
-            ],
-            [
                 ["--device-name"],
                 {
                     "dest": "device_name",
@@ -268,6 +259,14 @@ class Raptor(
                 },
             ],
             [
+                ["--geckoProfileFeatures"],
+                {
+                    "dest": "gecko_profile_features",
+                    "type": "str",
+                    "help": argparse.SUPPRESS,
+                },
+            ],
+            [
                 ["--gecko-profile"],
                 {
                     "dest": "gecko_profile",
@@ -290,6 +289,22 @@ class Raptor(
                     "dest": "gecko_profile_entries",
                     "type": "int",
                     "help": "How many samples to take with the profiler.",
+                },
+            ],
+            [
+                ["--gecko-profile-threads"],
+                {
+                    "dest": "gecko_profile_threads",
+                    "type": "str",
+                    "help": "Comma-separated list of threads to sample.",
+                },
+            ],
+            [
+                ["--gecko-profile-features"],
+                {
+                    "dest": "gecko_profile_features",
+                    "type": "str",
+                    "help": "Features to enable in the profiler.",
                 },
             ],
             [
@@ -394,12 +409,12 @@ class Raptor(
                 },
             ],
             [
-                ["--conditioned-profile-scenario"],
+                ["--conditioned-profile"],
                 {
-                    "dest": "conditioned_profile_scenario",
+                    "dest": "conditioned_profile",
                     "type": "str",
-                    "default": "settled",
-                    "help": "Name of profile scenario.",
+                    "default": None,
+                    "help": "Name of conditioned profile to use.",
                 },
             ],
             [
@@ -596,6 +611,8 @@ class Raptor(
         ) or "--geckoProfile" in self.config.get("raptor_cmd_line_args", [])
         self.gecko_profile_interval = self.config.get("gecko_profile_interval")
         self.gecko_profile_entries = self.config.get("gecko_profile_entries")
+        self.gecko_profile_threads = self.config.get("gecko_profile_threads")
+        self.gecko_profile_features = self.config.get("gecko_profile_features")
         self.test_packages_url = self.config.get("test_packages_url")
         self.test_url_params = self.config.get("test_url_params")
         self.host = self.config.get("host")
@@ -607,9 +624,7 @@ class Raptor(
         self.live_sites = self.config.get("live_sites")
         self.chimera = self.config.get("chimera")
         self.disable_perf_tuning = self.config.get("disable_perf_tuning")
-        self.conditioned_profile_scenario = self.config.get(
-            "conditioned_profile_scenario", "settled"
-        )
+        self.conditioned_profile = self.config.get("conditioned_profile")
         self.extra_prefs = self.config.get("extra_prefs")
         self.environment = self.config.get("environment")
         self.is_release_build = self.config.get("is_release_build")
@@ -617,7 +632,7 @@ class Raptor(
         self.chromium_dist_path = None
         self.firefox_android_browsers = ["fennec", "geckoview", "refbrow", "fenix"]
         self.android_browsers = self.firefox_android_browsers + ["chrome-m"]
-        self.browsertime_visualmetrics = False
+        self.browsertime_visualmetrics = self.config.get("browsertime_visualmetrics")
         self.browsertime_video = False
         self.enable_marionette_trace = self.config.get("enable_marionette_trace")
         self.browser_cycles = self.config.get("browser_cycles")
@@ -642,14 +657,22 @@ class Raptor(
         gecko_results = []
         # If gecko_profile is set, we add that to Raptor's options
         if self.gecko_profile:
-            gecko_results.append("--geckoProfile")
+            gecko_results.append("--gecko-profile")
             if self.gecko_profile_interval:
                 gecko_results.extend(
-                    ["--geckoProfileInterval", str(self.gecko_profile_interval)]
+                    ["--gecko-profile-interval", str(self.gecko_profile_interval)]
                 )
             if self.gecko_profile_entries:
                 gecko_results.extend(
-                    ["--geckoProfileEntries", str(self.gecko_profile_entries)]
+                    ["--gecko-profile-entries", str(self.gecko_profile_entries)]
+                )
+            if self.gecko_profile_features:
+                gecko_results.extend(
+                    ["--gecko-profile-features", self.gecko_profile_features]
+                )
+            if self.gecko_profile_threads:
+                gecko_results.extend(
+                    ["--gecko-profile-threads", self.gecko_profile_threads]
                 )
         return gecko_results
 
@@ -846,10 +869,8 @@ class Raptor(
             kw_options["device-name"] = self.config["device_name"]
         if self.config.get("activity") is not None:
             kw_options["activity"] = self.config["activity"]
-        if self.config.get("conditioned_profile_scenario") is not None:
-            kw_options["conditioned-profile-scenario"] = self.config[
-                "conditioned_profile_scenario"
-            ]
+        if self.config.get("conditioned_profile") is not None:
+            kw_options["conditioned-profile"] = self.config["conditioned_profile"]
 
         kw_options.update(kw)
         if self.host:
@@ -884,8 +905,6 @@ class Raptor(
             options.extend(["--cold"])
         if self.config.get("enable_webrender", False):
             options.extend(["--enable-webrender"])
-        if self.config.get("no_conditioned_profile", False):
-            options.extend(["--no-conditioned-profile"])
         if self.config.get("enable_fission", False):
             options.extend(["--enable-fission"])
         if self.config.get("verbose", False):
@@ -996,7 +1015,7 @@ class Raptor(
         )
 
         modules = ["pip>=1.5"]
-        if self.run_local:
+        if self.run_local and self.browsertime_visualmetrics:
             # Add modules required for visual metrics
             modules.extend(
                 ["numpy==1.16.1", "Pillow==6.1.0", "scipy==1.2.3", "pyssim==0.4"]

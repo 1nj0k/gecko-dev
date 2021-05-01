@@ -126,6 +126,9 @@ struct gfxFontStyle {
   // The logical size of the font, in pixels
   gfxFloat size;
 
+  // The optical size value to apply (if supported); negative means none.
+  float autoOpticalSize = -1.0f;
+
   // The aspect-value (ie., the ratio actualsize:actualxheight) that any
   // actual physical font created from this font structure must have when
   // rendering or measuring a string. A value of -1.0 means no adjustment
@@ -219,8 +222,7 @@ struct gfxFontStyle {
   }
 
   bool Equals(const gfxFontStyle& other) const {
-    return (*reinterpret_cast<const uint64_t*>(&size) ==
-            *reinterpret_cast<const uint64_t*>(&other.size)) &&
+    return mozilla::NumbersAreBitwiseIdentical(size, other.size) &&
            (style == other.style) && (weight == other.weight) &&
            (stretch == other.stretch) && (variantCaps == other.variantCaps) &&
            (variantSubSuper == other.variantSubSuper) &&
@@ -230,13 +232,14 @@ struct gfxFontStyle {
            (printerFont == other.printerFont) &&
            (useGrayscaleAntialiasing == other.useGrayscaleAntialiasing) &&
            (baselineOffset == other.baselineOffset) &&
-           (*reinterpret_cast<const uint32_t*>(&sizeAdjust) ==
-            *reinterpret_cast<const uint32_t*>(&other.sizeAdjust)) &&
+           mozilla::NumbersAreBitwiseIdentical(sizeAdjust, other.sizeAdjust) &&
            (featureSettings == other.featureSettings) &&
            (variantAlternates == other.variantAlternates) &&
            (featureValueLookup == other.featureValueLookup) &&
            (variationSettings == other.variationSettings) &&
            (languageOverride == other.languageOverride) &&
+           mozilla::NumbersAreBitwiseIdentical(autoOpticalSize,
+                                               other.autoOpticalSize) &&
            (fontSmoothingBackgroundColor == other.fontSmoothingBackgroundColor);
   }
 };
@@ -1494,7 +1497,9 @@ class gfxFont {
     // but it may be overridden by a value computed in metrics initialization
     // from font-size-adjust.
     if (mAdjustedSize < 0.0) {
-      mAdjustedSize = mStyle.sizeAdjust == 0.0 ? 0.0 : mStyle.size * mFontEntry->mSizeAdjust;
+      mAdjustedSize = mStyle.sizeAdjust == 0.0
+                          ? 0.0
+                          : mStyle.size * mFontEntry->mSizeAdjust;
     }
     return mAdjustedSize;
   }

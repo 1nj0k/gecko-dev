@@ -47,7 +47,6 @@
 #include "nsViewManager.h"
 #include "mozilla/RestyleManager.h"
 #include "SurfaceCacheUtils.h"
-#include "nsMediaFeatures.h"
 #include "gfxPlatform.h"
 #include "nsFontFaceLoader.h"
 #include "mozilla/AnimationEventDispatcher.h"
@@ -297,7 +296,7 @@ void nsPresContext::Destroy() {
                                    gExactCallbackPrefs, this);
 
   mRefreshDriver = nullptr;
-  MOZ_ASSERT(mOneShotPostRefreshObservers.IsEmpty());
+  MOZ_ASSERT(mManagedPostRefreshObservers.IsEmpty());
 }
 
 nsPresContext::~nsPresContext() {
@@ -1388,10 +1387,6 @@ void nsPresContext::ThemeChangedInternal() {
     }
   }
 
-  // This will force the system metrics to be generated the next time they're
-  // used.
-  nsMediaFeatures::FreeSystemMetrics();
-
   // Reset default background and foreground colors for the document since they
   // may be using system colors.
   PreferenceSheet::Refresh();
@@ -1493,31 +1488,32 @@ void nsPresContext::ContentLanguageChanged() {
                                RestyleHint::RecascadeSubtree());
 }
 
-bool nsPresContext::RegisterOneShotPostRefreshObserver(
-    mozilla::OneShotPostRefreshObserver* aObserver) {
+bool nsPresContext::RegisterManagedPostRefreshObserver(
+    mozilla::ManagedPostRefreshObserver* aObserver) {
   RefreshDriver()->AddPostRefreshObserver(
       static_cast<nsAPostRefreshObserver*>(aObserver));
-  mOneShotPostRefreshObservers.AppendElement(aObserver);
+  mManagedPostRefreshObservers.AppendElement(aObserver);
   return true;
 }
 
-void nsPresContext::UnregisterOneShotPostRefreshObserver(
-    mozilla::OneShotPostRefreshObserver* aObserver) {
+void nsPresContext::UnregisterManagedPostRefreshObserver(
+    mozilla::ManagedPostRefreshObserver* aObserver) {
   RefreshDriver()->RemovePostRefreshObserver(
       static_cast<nsAPostRefreshObserver*>(aObserver));
   DebugOnly<bool> removed =
-      mOneShotPostRefreshObservers.RemoveElement(aObserver);
+      mManagedPostRefreshObservers.RemoveElement(aObserver);
   MOZ_ASSERT(removed,
-             "OneShotPostRefreshObserver should be owned by PresContext");
+             "ManagedPostRefreshObserver should be owned by PresContext");
 }
 
-void nsPresContext::ClearOneShotPostRefreshObservers() {
-  for (const auto& observer : mOneShotPostRefreshObservers) {
-    RefreshDriver()->RemovePostRefreshObserver(
+void nsPresContext::CancelManagedPostRefreshObservers() {
+  auto observers = std::move(mManagedPostRefreshObservers);
+  nsRefreshDriver* driver = RefreshDriver();
+  for (const auto& observer : observers) {
+    observer->Cancel();
+    driver->RemovePostRefreshObserver(
         static_cast<nsAPostRefreshObserver*>(observer));
   }
-
-  mOneShotPostRefreshObservers.Clear();
 }
 
 void nsPresContext::RebuildAllStyleData(nsChangeHint aExtraHint,

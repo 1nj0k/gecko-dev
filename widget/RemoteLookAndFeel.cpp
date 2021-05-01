@@ -23,6 +23,14 @@
 
 namespace mozilla::widget {
 
+// A cached copy of the data extracted by ExtractData.
+//
+// Storing this lets us avoid doing most of the work of ExtractData each
+// time we create a new content process.
+//
+// Only used in the parent process.
+static StaticAutoPtr<FullLookAndFeel> sCachedLookAndFeelData;
+
 RemoteLookAndFeel::RemoteLookAndFeel(FullLookAndFeel&& aData)
     : mTables(std::move(aData.tables())) {
   MOZ_ASSERT(XRE_IsContentProcess(),
@@ -55,6 +63,17 @@ void RemoteLookAndFeel::SetDataImpl(FullLookAndFeel&& aData) {
 }
 
 namespace {
+
+// Some lnf values are somewhat expensive to get, and are not needed in child
+// processes, so we can avoid querying them.
+bool IsNeededInChildProcess(LookAndFeel::IntID aId) {
+  switch (aId) {
+    case LookAndFeel::IntID::AlertNotificationOrigin:
+      return false;  // see bug 1703205
+    default:
+      return true;
+  }
+}
 
 template <typename Item, typename UInt, typename ID>
 Result<const Item*, nsresult> MapLookup(const nsTArray<Item>& aItems,
@@ -98,14 +117,23 @@ void AddToMap(nsTArray<Item>& aItems, nsTArray<UInt>& aMap, Id aId,
 
 }  // namespace
 
-nsresult RemoteLookAndFeel::NativeGetColor(ColorID aID, nscolor& aResult) {
+nsresult RemoteLookAndFeel::NativeGetColor(ColorID aID, ColorScheme aScheme,
+                                           nscolor& aResult) {
   const nscolor* result;
-  MOZ_TRY_VAR(result, MapLookup(mTables.colors(), mTables.colorMap(), aID));
+  const bool dark = aScheme == ColorScheme::Dark;
+  MOZ_TRY_VAR(
+      result,
+      MapLookup(dark ? mTables.darkColors() : mTables.lightColors(),
+                dark ? mTables.darkColorMap() : mTables.lightColorMap(), aID));
   aResult = *result;
   return NS_OK;
 }
 
 nsresult RemoteLookAndFeel::NativeGetInt(IntID aID, int32_t& aResult) {
+  MOZ_DIAGNOSTIC_ASSERT(
+      IsNeededInChildProcess(aID),
+      "Querying value that we didn't bother getting from the parent process!");
+
   const int32_t* result;
   MOZ_TRY_VAR(result, MapLookup(mTables.ints(), mTables.intMap(), aID));
   aResult = *result;
@@ -135,17 +163,16 @@ char16_t RemoteLookAndFeel::GetPasswordCharacterImpl() {
 
 bool RemoteLookAndFeel::GetEchoPasswordImpl() { return mTables.passwordEcho(); }
 
-static bool AddIDsToMap(nsXPLookAndFeel* aImpl, FullLookAndFeel* aLf,
-                        bool aDifferentTheme, bool aFromParentTheme) {
+static bool AddIDsToMap(nsXPLookAndFeel* aImpl, FullLookAndFeel* aLf) {
   using IntID = LookAndFeel::IntID;
   using FontID = LookAndFeel::FontID;
   using FloatID = LookAndFeel::FloatID;
   using ColorID = LookAndFeel::ColorID;
+  using ColorScheme = LookAndFeel::ColorScheme;
 
   bool anyFromOtherTheme = false;
   for (auto id : MakeEnumeratedRange(IntID::End)) {
-    if (aDifferentTheme && aImpl->FromParentTheme(id) != aFromParentTheme) {
-      anyFromOtherTheme = true;
+    if (!IsNeededInChildProcess(id)) {
       continue;
     }
     int32_t theInt;
@@ -155,19 +182,13 @@ static bool AddIDsToMap(nsXPLookAndFeel* aImpl, FullLookAndFeel* aLf,
   }
 
   for (auto id : MakeEnumeratedRange(ColorID::End)) {
-    if (aDifferentTheme && aImpl->FromParentTheme(id) != aFromParentTheme) {
-      anyFromOtherTheme = true;
-      continue;
-    }
     nscolor theColor;
-    nsresult rv = aImpl->NativeGetColor(id, theColor);
-    AddToMap(aLf->tables().colors(), aLf->tables().colorMap(), id,
+    nsresult rv = aImpl->NativeGetColor(id, ColorScheme::Light, theColor);
+    AddToMap(aLf->tables().lightColors(), aLf->tables().lightColorMap(), id,
              NS_SUCCEEDED(rv) ? Some(theColor) : Nothing{});
-  }
-
-  // The rest of IDs only come from the child content theme.
-  if (aFromParentTheme) {
-    return anyFromOtherTheme;
+    rv = aImpl->NativeGetColor(id, ColorScheme::Dark, theColor);
+    AddToMap(aLf->tables().darkColors(), aLf->tables().darkColorMap(), id,
+             NS_SUCCEEDED(rv) ? Some(theColor) : Nothing{});
   }
 
   for (auto id : MakeEnumeratedRange(FloatID::End)) {
@@ -212,23 +233,11 @@ const FullLookAndFeel* RemoteLookAndFeel::ExtractData() {
   FullLookAndFeel* lf = new FullLookAndFeel{};
   nsXPLookAndFeel* impl = nsXPLookAndFeel::GetInstance();
 
-  bool anyFromParent = false;
-  impl->WithThemeConfiguredForContent([&](const LookAndFeelTheme& aTheme,
-                                          bool aDifferentTheme) {
-    anyFromParent =
-        AddIDsToMap(impl, lf, aDifferentTheme, /* aFromParentTheme = */ false);
-    MOZ_ASSERT_IF(anyFromParent, aDifferentTheme);
-    lf->tables().passwordChar() = impl->GetPasswordCharacterImpl();
-    lf->tables().passwordEcho() = impl->GetEchoPasswordImpl();
 #ifdef MOZ_WIDGET_GTK
-    lf->theme() = aTheme;
+  impl->GetGtkContentTheme(lf->theme());
 #endif
-  });
 
-  if (anyFromParent) {
-    AddIDsToMap(impl, lf, /* aDifferentTheme = */ true,
-                /* aFromParentTheme = */ true);
-  }
+  AddIDsToMap(impl, lf);
 
   // This assignment to sCachedLookAndFeelData must be done after the
   // WithThemeConfiguredForContent call, since it can end up calling RefreshImpl
@@ -241,7 +250,5 @@ void RemoteLookAndFeel::ClearCachedData() {
   MOZ_ASSERT(XRE_IsParentProcess());
   sCachedLookAndFeelData = nullptr;
 }
-
-StaticAutoPtr<FullLookAndFeel> RemoteLookAndFeel::sCachedLookAndFeelData;
 
 }  // namespace mozilla::widget

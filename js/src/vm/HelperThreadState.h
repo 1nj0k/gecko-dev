@@ -158,6 +158,8 @@ class GlobalHelperThreadState {
   // This is used to get the HelperThreadTask that are currently running.
   HelperThreadTaskVector helperTasks_;
 
+  bool useInternalThreadPool_;
+
   ParseTask* removeFinishedParseTask(JSContext* cx, ParseTaskKind kind,
                                      JS::OffThreadToken* token);
 
@@ -211,6 +213,8 @@ class GlobalHelperThreadState {
   void wait(AutoLockHelperThreadState& locked, CondVar which,
             mozilla::TimeDuration timeout = mozilla::TimeDuration::Forever());
   void notifyAll(CondVar which, const AutoLockHelperThreadState&);
+
+  bool useInternalThreadPool(const AutoLockHelperThreadState& locked);
 
  private:
   void notifyOne(CondVar which, const AutoLockHelperThreadState&);
@@ -615,7 +619,9 @@ class SourceCompressionTask : public HelperThreadTask {
  public:
   // The majorGCNumber is used for scheduling tasks.
   SourceCompressionTask(JSRuntime* rt, ScriptSource* source)
-      : runtime_(rt), majorGCNumber_(rt->gc.majorGCCount()), source_(source) {}
+      : runtime_(rt), majorGCNumber_(rt->gc.majorGCCount()), source_(source) {
+    source->noteSourceCompressionTask();
+  }
   virtual ~SourceCompressionTask() = default;
 
   bool runtimeMatches(JSRuntime* runtime) const { return runtime == runtime_; }

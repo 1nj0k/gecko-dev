@@ -666,6 +666,12 @@ class MediaDecoderStateMachine::DecodingState
  protected:
   virtual void EnsureAudioDecodeTaskQueued();
 
+  virtual bool ShouldStopPrerolling() const {
+    return mIsPrerolling &&
+           (DonePrerollingAudio() || mMaster->IsWaitingAudioData()) &&
+           (DonePrerollingVideo() || mMaster->IsWaitingVideoData());
+  }
+
  private:
   void DispatchDecodeTasksIfNeeded();
   void EnsureVideoDecodeTaskQueued();
@@ -688,21 +694,19 @@ class MediaDecoderStateMachine::DecodingState
         sVideoQueueDefaultSize);
   }
 
-  bool DonePrerollingAudio() {
+  bool DonePrerollingAudio() const {
     return !mMaster->IsAudioDecoding() ||
            mMaster->GetDecodedAudioDuration() >= AudioPrerollThreshold();
   }
 
-  bool DonePrerollingVideo() {
+  bool DonePrerollingVideo() const {
     return !mMaster->IsVideoDecoding() ||
            static_cast<uint32_t>(mMaster->VideoQueue().GetSize()) >=
                VideoPrerollFrames();
   }
 
   void MaybeStopPrerolling() {
-    if (mIsPrerolling &&
-        (DonePrerollingAudio() || mMaster->IsWaitingAudioData()) &&
-        (DonePrerollingVideo() || mMaster->IsWaitingVideoData())) {
+    if (ShouldStopPrerolling()) {
       mIsPrerolling = false;
       // Check if we can start playback.
       mMaster->ScheduleStateMachine();
@@ -765,16 +769,17 @@ class MediaDecoderStateMachine::DecodingState
 };
 
 /**
- * Purpose: decode audio/video data for playback when media is in seamless
+ * Purpose: decode audio data for playback when media is in seamless
  * looping, we will adjust media time to make samples time monotonically
- * increasing.
+ * increasing. Note, it's currently used for audio-only, but we should make it
+ * work on video as well in bug 1262276.
  *
  * Transition to:
  *   DORMANT if playback is paused for a while.
  *   SEEKING if any seek request.
  *   SHUTDOWN if any decode error.
  *   BUFFERING if playback can't continue due to lack of decoded data.
- *   COMPLETED when having decoded all audio/video data.
+ *   COMPLETED when having decoded all audio data.
  *   DECODING when media stop seamless looping
  */
 class MediaDecoderStateMachine::LoopingDecodingState
@@ -974,6 +979,13 @@ class MediaDecoderStateMachine::LoopingDecodingState
     // should mark audio queue as ended because we have got all data we need.
     return mAudioDataRequest.Exists() || mAudioSeekRequest.Exists() ||
            ShouldDiscardLoopedAudioData();
+  }
+
+  bool ShouldStopPrerolling() const override {
+    // When the data has reached EOS, that means the queue has been finished. If
+    // MDSM isn't playing now, then we would preroll some data in order to let
+    // new data to reopen the queue before starting playback again.
+    return !mIsReachingAudioEOS && DecodingState::ShouldStopPrerolling();
   }
 
   bool mIsReachingAudioEOS;
@@ -2658,6 +2670,7 @@ RefPtr<ShutdownPromise> MediaDecoderStateMachine::ShutdownState::Enter() {
   master->mVolume.DisconnectIfConnected();
   master->mPreservesPitch.DisconnectIfConnected();
   master->mLooping.DisconnectIfConnected();
+  master->mStreamName.DisconnectIfConnected();
   master->mSinkDevice.DisconnectIfConnected();
   master->mSecondaryVideoContainer.DisconnectIfConnected();
   master->mOutputCaptureState.DisconnectIfConnected();
@@ -2711,6 +2724,7 @@ MediaDecoderStateMachine::MediaDecoderStateMachine(MediaDecoder* aDecoder,
       INIT_MIRROR(mVolume, 1.0),
       INIT_MIRROR(mPreservesPitch, true),
       INIT_MIRROR(mLooping, false),
+      INIT_MIRROR(mStreamName, nsAutoString()),
       INIT_MIRROR(mSinkDevice, nullptr),
       INIT_MIRROR(mSecondaryVideoContainer, nullptr),
       INIT_MIRROR(mOutputCaptureState, MediaDecoder::OutputCaptureState::None),
@@ -2751,6 +2765,7 @@ void MediaDecoderStateMachine::InitializationTask(MediaDecoder* aDecoder) {
   mVolume.Connect(aDecoder->CanonicalVolume());
   mPreservesPitch.Connect(aDecoder->CanonicalPreservesPitch());
   mLooping.Connect(aDecoder->CanonicalLooping());
+  mStreamName.Connect(aDecoder->CanonicalStreamName());
   mSinkDevice.Connect(aDecoder->CanonicalSinkDevice());
   mSecondaryVideoContainer.Connect(
       aDecoder->CanonicalSecondaryVideoContainer());
@@ -2767,6 +2782,8 @@ void MediaDecoderStateMachine::InitializationTask(MediaDecoder* aDecoder) {
                       &MediaDecoderStateMachine::PreservesPitchChanged);
   mWatchManager.Watch(mPlayState, &MediaDecoderStateMachine::PlayStateChanged);
   mWatchManager.Watch(mLooping, &MediaDecoderStateMachine::LoopingChanged);
+  mWatchManager.Watch(mStreamName,
+                      &MediaDecoderStateMachine::StreamNameChanged);
   mWatchManager.Watch(mSecondaryVideoContainer,
                       &MediaDecoderStateMachine::UpdateSecondaryVideoContainer);
   mWatchManager.Watch(mOutputCaptureState,
@@ -2808,10 +2825,10 @@ MediaSink* MediaDecoderStateMachine::CreateAudioSink() {
   }
 
   RefPtr<MediaDecoderStateMachine> self = this;
-  auto audioSinkCreator = [self]() {
+  auto audioSinkCreator = [self](const media::TimeUnit& aStartTime) {
     MOZ_ASSERT(self->OnTaskQueue());
     AudioSink* audioSink =
-        new AudioSink(self->mTaskQueue, self->mAudioQueue, self->GetMediaTime(),
+        new AudioSink(self->mTaskQueue, self->mAudioQueue, aStartTime,
                       self->Info().mAudio, self->mSinkDevice.Ref());
     self->mAudibleListener.DisconnectIfExists();
     self->mAudibleListener = audioSink->AudibleEvent().Connect(
@@ -3369,6 +3386,7 @@ nsresult MediaDecoderStateMachine::StartMediaSink() {
 
   mAudioCompleted = false;
   nsresult rv = mMediaSink->Start(GetMediaTime(), Info());
+  StreamNameChanged();
 
   auto videoPromise = mMediaSink->OnEnded(TrackInfo::kVideoTrack);
   auto audioPromise = mMediaSink->OnEnded(TrackInfo::kAudioTrack);
@@ -3695,6 +3713,14 @@ void MediaDecoderStateMachine::LoopingChanged() {
   }
 }
 
+void MediaDecoderStateMachine::StreamNameChanged() {
+  AUTO_PROFILER_LABEL("MediaDecoderStateMachine::StreamNameChanged",
+                      MEDIA_PLAYBACK);
+  MOZ_ASSERT(OnTaskQueue());
+
+  mMediaSink->SetStreamName(mStreamName);
+}
+
 void MediaDecoderStateMachine::UpdateOutputCaptured() {
   AUTO_PROFILER_LABEL("MediaDecoderStateMachine::UpdateOutputCaptured",
                       MEDIA_PLAYBACK);
@@ -3711,12 +3737,17 @@ void MediaDecoderStateMachine::UpdateOutputCaptured() {
 
   // Don't create a new media sink if we're still suspending media sink.
   if (!mIsMediaSinkSuspended) {
+    const bool wasPlaying = IsPlaying();
     // Stop and shut down the existing sink.
     StopMediaSink();
     mMediaSink->Shutdown();
 
     // Create a new sink according to whether output is captured.
     mMediaSink = CreateMediaSink();
+    if (wasPlaying) {
+      DebugOnly<nsresult> rv = StartMediaSink();
+      MOZ_ASSERT(NS_SUCCEEDED(rv));
+    }
   }
 
   // Don't buffer as much when audio is captured because we don't need to worry

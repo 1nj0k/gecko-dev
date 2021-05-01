@@ -6,12 +6,12 @@ import {
   WelcomeScreen,
 } from "content-src/aboutwelcome/components/MultiStageAboutWelcome";
 import { MultiStageScreen } from "content-src/aboutwelcome/components/MultiStageScreen";
+import { MultiStageProtonScreen } from "content-src/aboutwelcome/components/MultiStageProtonScreen";
+import { Themes } from "content-src/aboutwelcome/components/Themes";
 import React from "react";
 import { shallow, mount } from "enzyme";
-import { AboutWelcomeDefaults } from "aboutwelcome/lib/AboutWelcomeDefaults.jsm";
+import { DEFAULT_WELCOME_CONTENT } from "aboutwelcome/lib/AboutWelcomeDefaults.jsm";
 import { AboutWelcomeUtils } from "content-src/lib/aboutwelcome-utils";
-
-const DEFAULT_WELCOME_CONTENT = AboutWelcomeDefaults.getDefaults();
 
 describe("MultiStageAboutWelcome module", () => {
   let globals;
@@ -94,6 +94,17 @@ describe("MultiStageAboutWelcome module", () => {
         welcomeScreenWrapper.prop("initialTheme"),
         "automatic"
       );
+    });
+
+    it("should render proton screens when design is set to proton", async () => {
+      let wrapper = mount(
+        <MultiStageAboutWelcome design="proton" {...DEFAULT_PROPS} />
+      );
+      await new Promise(resolve => setTimeout(resolve, 0));
+      wrapper.update();
+
+      let protonScreenWrapper = wrapper.find(MultiStageProtonScreen);
+      assert.strictEqual(protonScreenWrapper.prop("design"), "proton");
     });
 
     it("should handle primary Action", () => {
@@ -260,7 +271,7 @@ describe("MultiStageAboutWelcome module", () => {
       });
 
       it("should select this.props.activeTheme in the rendered input", () => {
-        const wrapper = shallow(<MultiStageScreen {...THEME_SCREEN_PROPS} />);
+        const wrapper = shallow(<Themes {...THEME_SCREEN_PROPS} />);
 
         const selectedThemeInput = wrapper.find(".theme.selected input");
         assert.strictEqual(
@@ -270,7 +281,7 @@ describe("MultiStageAboutWelcome module", () => {
       });
 
       it("should check this.props.activeTheme in the rendered input", () => {
-        const wrapper = shallow(<MultiStageScreen {...THEME_SCREEN_PROPS} />);
+        const wrapper = shallow(<Themes {...THEME_SCREEN_PROPS} />);
 
         const selectedThemeInput = wrapper.find(".theme input[checked=true]");
         assert.strictEqual(

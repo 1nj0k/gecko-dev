@@ -1,16 +1,15 @@
-/* global $:false, Handlebars:false, PKT_SENDTOMOBILE:false, */
+/* global $:false, Handlebars:false, thePKT_PANEL:false */
 /* import-globals-from messages.js */
 
 /*
-PKT_SAVED_OVERLAY is the view itself and contains all of the methods to manipute the overlay and messaging.
+PKT_PANEL_OVERLAY is the view itself and contains all of the methods to manipute the overlay and messaging.
 It does not contain any logic for saving or communication with the extension or server.
 */
 
-var PKT_SAVED_OVERLAY = function(options) {
+var PKT_PANEL_OVERLAY = function(options) {
   var myself = this;
   this.inited = false;
   this.active = false;
-  this.wrapper = null;
   this.pockethost = "getpocket.com";
   this.savedItemId = 0;
   this.savedUrl = "";
@@ -44,7 +43,7 @@ var PKT_SAVED_OVERLAY = function(options) {
     }
   };
   this.fillUserTags = function() {
-    thePKT_SAVED.sendMessage("PKT_getTags", {}, function(resp) {
+    thePKT_PANEL.sendMessage("PKT_getTags", {}, function(resp) {
       const { data } = resp;
       if (typeof data == "object" && typeof data.tags == "object") {
         myself.userTags = data.tags;
@@ -60,7 +59,7 @@ var PKT_SAVED_OVERLAY = function(options) {
 
     $(".pkt_ext_subshell").show();
 
-    thePKT_SAVED.sendMessage(
+    thePKT_PANEL.sendMessage(
       "PKT_getSuggestedTags",
       {
         url: myself.savedUrl,
@@ -97,17 +96,26 @@ var PKT_SAVED_OVERLAY = function(options) {
     );
   };
   this.initAutoCloseEvents = function() {
-    this.wrapper.on("mouseenter", function() {
-      myself.mouseInside = true;
-      myself.stopCloseTimer();
-    });
-    this.wrapper.on("mouseleave", function() {
-      myself.mouseInside = false;
-      myself.startCloseTimer();
-    });
-    this.wrapper.on("click", function(e) {
-      myself.closeValid = false;
-    });
+    document
+      .querySelector(`.pkt_ext_containersaved`)
+      .addEventListener(`mouseenter`, () => {
+        myself.mouseInside = true;
+        myself.stopCloseTimer();
+      });
+
+    document
+      .querySelector(`.pkt_ext_containersaved`)
+      .addEventListener(`mouseleave`, () => {
+        myself.mouseInside = false;
+        myself.startCloseTimer();
+      });
+
+    document
+      .querySelector(`.pkt_ext_containersaved`)
+      .addEventListener(`click`, () => {
+        myself.closeValid = false;
+      });
+
     $("body").on("keydown", function(e) {
       var key = e.keyCode || e.which;
       if (key === 9) {
@@ -140,7 +148,7 @@ var PKT_SAVED_OVERLAY = function(options) {
   };
   this.closePopup = function() {
     myself.stopCloseTimer();
-    thePKT_SAVED.sendMessage("PKT_close");
+    thePKT_PANEL.sendMessage("PKT_close");
   };
   this.checkValidTagSubmit = function() {
     var inputlength = $.trim(
@@ -149,18 +157,20 @@ var PKT_SAVED_OVERLAY = function(options) {
         .children("input")
         .val()
     ).length;
+
     if (
-      $(".pkt_ext_containersaved").find(".token-input-token").length ||
+      document.querySelector(`.pkt_ext_containersaved .token-input-token`) ||
       (inputlength > 0 && inputlength < 26)
     ) {
-      $(".pkt_ext_containersaved")
-        .find(".pkt_ext_btn")
-        .removeClass("pkt_ext_btn_disabled");
+      document
+        .querySelector(`.pkt_ext_containersaved .pkt_ext_btn`)
+        .classList.remove(`pkt_ext_btn_disabled`);
     } else {
-      $(".pkt_ext_containersaved")
-        .find(".pkt_ext_btn")
-        .addClass("pkt_ext_btn_disabled");
+      document
+        .querySelector(`.pkt_ext_containersaved .pkt_ext_btn`)
+        .classList.add(`pkt_ext_btn_disabled`);
     }
+
     myself.updateSlidingTagList();
   };
   this.updateSlidingTagList = function() {
@@ -187,17 +197,23 @@ var PKT_SAVED_OVERLAY = function(options) {
   };
   this.checkPlaceholderStatus = function() {
     if (
-      this.wrapper.find(".pkt_ext_tag_input_wrapper").find(".token-input-token")
-        .length
+      document.querySelector(
+        `.pkt_ext_containersaved .pkt_ext_tag_input_wrapper .token-input-token`
+      )
     ) {
-      this.wrapper
-        .find(".token-input-input-token input")
-        .attr("placeholder", "");
+      document
+        .querySelector(`.pkt_ext_containersaved .token-input-input-token input`)
+        .setAttribute(`placeholder`, ``);
     } else {
-      this.wrapper
-        .find(".token-input-input-token input")
-        .attr("placeholder", $(".pkt_ext_tag_input").attr("placeholder"))
-        .css("width", "200px");
+      let elTokenInput = document.querySelector(
+        `.pkt_ext_containersaved .token-input-input-token input`
+      );
+
+      elTokenInput.setAttribute(
+        `placeholder`,
+        document.querySelector(`.pkt_ext_tag_input`).getAttribute(`placeholder`)
+      );
+      elTokenInput.style.width = `200px`;
     }
   };
   this.initTagInput = function() {
@@ -252,7 +268,7 @@ var PKT_SAVED_OVERLAY = function(options) {
           .attr("placeholder", $(".tag-input").attr("placeholder"))
           .css("width", "200px");
         if ($(".pkt_ext_suggestedtag_detail").length) {
-          myself.wrapper
+          $(".pkt_ext_containersaved")
             .find(".pkt_ext_suggestedtag_detail")
             .on("click", ".token_tag", function(e) {
               e.preventDefault();
@@ -287,7 +303,9 @@ var PKT_SAVED_OVERLAY = function(options) {
                 Date.now() - this.changestamp > 250
               ) {
                 e.preventDefault();
-                myself.wrapper.find(".pkt_ext_btn").trigger("click");
+                $(".pkt_ext_containersaved")
+                  .find(".pkt_ext_btn")
+                  .trigger("click");
               }
             }
           })
@@ -336,31 +354,41 @@ var PKT_SAVED_OVERLAY = function(options) {
     });
   };
   this.disableInput = function() {
-    this.wrapper
-      .find(".pkt_ext_item_actions")
-      .addClass("pkt_ext_item_actions_disabled");
-    this.wrapper.find(".pkt_ext_btn").addClass("pkt_ext_btn_disabled");
-    this.wrapper
-      .find(".pkt_ext_tag_input_wrapper")
-      .addClass("pkt_ext_tag_input_wrapper_disabled");
-    if (this.wrapper.find(".pkt_ext_suggestedtag_detail").length) {
-      this.wrapper
-        .find(".pkt_ext_suggestedtag_detail")
-        .addClass("pkt_ext_suggestedtag_detail_disabled");
+    document
+      .querySelector(`.pkt_ext_containersaved .pkt_ext_item_actions`)
+      .classList.add("pkt_ext_item_actions_disabled");
+    document
+      .querySelector(`.pkt_ext_containersaved .pkt_ext_btn`)
+      .classList.add("pkt_ext_btn_disabled");
+    document
+      .querySelector(`.pkt_ext_containersaved .pkt_ext_tag_input_wrapper`)
+      .classList.add("pkt_ext_tag_input_wrapper_disabled");
+    if (
+      document.querySelector(
+        `.pkt_ext_containersaved .pkt_ext_suggestedtag_detail`
+      )
+    ) {
+      document
+        .querySelector(`.pkt_ext_containersaved .pkt_ext_suggestedtag_detail`)
+        .classList.add("pkt_ext_suggestedtag_detail_disabled");
     }
   };
   this.enableInput = function() {
-    this.wrapper
-      .find(".pkt_ext_item_actions")
-      .removeClass("pkt_ext_item_actions_disabled");
+    document
+      .querySelector(`.pkt_ext_containersaved .pkt_ext_item_actions`)
+      .classList.remove("pkt_ext_item_actions_disabled");
     this.checkValidTagSubmit();
-    this.wrapper
-      .find(".pkt_ext_tag_input_wrapper")
-      .removeClass("pkt_ext_tag_input_wrapper_disabled");
-    if (this.wrapper.find(".pkt_ext_suggestedtag_detail").length) {
-      this.wrapper
-        .find(".pkt_ext_suggestedtag_detail")
-        .removeClass("pkt_ext_suggestedtag_detail_disabled");
+    document
+      .querySelector(`.pkt_ext_containersaved .pkt_ext_tag_input_wrapper`)
+      .classList.remove("pkt_ext_tag_input_wrapper_disabled");
+    if (
+      document.querySelector(
+        `.pkt_ext_containersaved .pkt_ext_suggestedtag_detail`
+      )
+    ) {
+      document
+        .querySelector(`.pkt_ext_containersaved .pkt_ext_suggestedtag_detail`)
+        .classList.remove("pkt_ext_suggestedtag_detail_disabled");
     }
   };
   this.initAddTagInput = function() {
@@ -388,7 +416,7 @@ var PKT_SAVED_OVERLAY = function(options) {
         }
       });
 
-      thePKT_SAVED.sendMessage(
+      thePKT_PANEL.sendMessage(
         "PKT_addTags",
         {
           url: myself.savedUrl,
@@ -421,7 +449,7 @@ var PKT_SAVED_OVERLAY = function(options) {
           .find(".pkt_ext_detail h2")
           .text(myself.dictJSON.processingremove);
 
-        thePKT_SAVED.sendMessage(
+        thePKT_PANEL.sendMessage(
           "PKT_deleteItem",
           {
             itemId: myself.savedItemId,
@@ -443,7 +471,7 @@ var PKT_SAVED_OVERLAY = function(options) {
   this.initOpenListInput = function() {
     $(".pkt_ext_openpocket").click(function(e) {
       e.preventDefault();
-      thePKT_SAVED.sendMessage("PKT_openTabWithUrl", {
+      thePKT_PANEL.sendMessage("PKT_openTabWithUrl", {
         url: $(this).attr("href"),
         activate: true,
         source: "view_list",
@@ -502,17 +530,27 @@ var PKT_SAVED_OVERLAY = function(options) {
     });
   };
   this.showStateSaved = function(initobj) {
-    this.wrapper.find(".pkt_ext_detail h2").text(this.dictJSON.pagesaved);
-    this.wrapper.find(".pkt_ext_btn").addClass("pkt_ext_btn_disabled");
+    document.querySelector(
+      `.pkt_ext_detail h2`
+    ).textContent = this.dictJSON.pagesaved;
+    document
+      .querySelector(`.pkt_ext_btn`)
+      .classList.add(`pkt_ext_btn_disabled`);
+
     if (typeof initobj.item == "object") {
       this.savedItemId = initobj.item.item_id;
       this.savedUrl = initobj.item.given_url;
     }
-    $(".pkt_ext_containersaved")
-      .addClass("pkt_ext_container_detailactive")
-      .removeClass("pkt_ext_container_finalstate");
+
+    document
+      .querySelector(`.pkt_ext_containersaved`)
+      .classList.add(`pkt_ext_container_detailactive`);
+    document
+      .querySelector(`.pkt_ext_containersaved`)
+      .classList.remove(`pkt_ext_container_finalstate`);
 
     myself.fillUserTags();
+
     if (myself.suggestedTagsLoaded) {
       myself.startCloseTimer();
     } else {
@@ -548,7 +586,7 @@ var PKT_SAVED_OVERLAY = function(options) {
       $(".pkt_ext_item_recs").append(renderedRecs);
       $(".pkt_ext_learn_more").click(function(e) {
         e.preventDefault();
-        thePKT_SAVED.sendMessage("PKT_openTabWithUrl", {
+        thePKT_PANEL.sendMessage("PKT_openTabWithUrl", {
           url: $(this).attr("href"),
           activate: true,
           source: "recs_learn_more",
@@ -558,7 +596,7 @@ var PKT_SAVED_OVERLAY = function(options) {
         e.preventDefault();
         const url = $(this).attr("href");
         const position = $(".pkt_ext_item_recs_link").index(this);
-        thePKT_SAVED.sendMessage("PKT_openTabWithPocketUrl", {
+        thePKT_PANEL.sendMessage("PKT_openTabWithPocketUrl", {
           url,
           model,
           position,
@@ -582,7 +620,7 @@ var PKT_SAVED_OVERLAY = function(options) {
     });
   };
   this.showStateFinalMsg = function(msg) {
-    this.wrapper
+    $(".pkt_ext_containersaved")
       .find(".pkt_ext_tag_detail")
       .one(
         "webkitTransitionEnd transitionend msTransitionEnd oTransitionEnd",
@@ -592,17 +630,30 @@ var PKT_SAVED_OVERLAY = function(options) {
           );
           myself.preventCloseTimerCancel = true;
           myself.startCloseTimer(myself.autocloseTimingFinalState);
-          myself.wrapper.find(".pkt_ext_detail h2").text(msg);
+          $(".pkt_ext_containersaved")
+            .find(".pkt_ext_detail h2")
+            .text(msg);
         }
       );
-    this.wrapper.addClass("pkt_ext_container_finalstate");
+    $(".pkt_ext_containersaved").addClass("pkt_ext_container_finalstate");
   };
   this.showStateError = function(headline, detail) {
-    this.wrapper.find(".pkt_ext_detail h2").text(headline);
-    this.wrapper.find(".pkt_ext_detail h3").text(detail);
-    this.wrapper.addClass(
-      "pkt_ext_container_detailactive pkt_ext_container_finalstate pkt_ext_container_finalerrorstate"
-    );
+    document
+      .querySelector(`.pkt_ext_containersaved .pkt_ext_detail h2`)
+      .textContent(headline);
+
+    document
+      .querySelector(`.pkt_ext_containersaved .pkt_ext_detail h3`)
+      .textContent(detail);
+
+    document
+      .querySelector(`.pkt_ext_containersaved`)
+      .classList.add(
+        `pkt_ext_container_detailactive`,
+        `pkt_ext_container_finalstate`,
+        `pkt_ext_container_finalerrorstate`
+      );
+
     this.preventCloseTimerCancel = true;
     this.startCloseTimer(myself.autocloseTimingFinalState);
   };
@@ -611,12 +662,30 @@ var PKT_SAVED_OVERLAY = function(options) {
   };
 };
 
-PKT_SAVED_OVERLAY.prototype = {
+PKT_PANEL_OVERLAY.prototype = {
   create() {
     if (this.active) {
       return;
     }
     this.active = true;
+    var myself = this;
+
+    var url = window.location.href.match(/premiumStatus=([\w|\d|\.]*)&?/);
+    if (url && url.length > 1) {
+      this.premiumStatus = url[1] == "1";
+    }
+    var fxasignedin = window.location.href.match(/fxasignedin=([\w|\d|\.]*)&?/);
+    if (fxasignedin && fxasignedin.length > 1) {
+      this.fxasignedin = fxasignedin[1] == "1";
+    }
+    var host = window.location.href.match(/pockethost=([\w|\.]*)&?/);
+    if (host && host.length > 1) {
+      this.pockethost = host[1];
+    }
+    var locale = window.location.href.match(/locale=([\w|\.]*)&?/);
+    if (locale && locale.length > 1) {
+      this.locale = locale[1].toLowerCase();
+    }
 
     // set translations
     this.getTranslations();
@@ -626,183 +695,90 @@ PKT_SAVED_OVERLAY.prototype = {
 
     // extra modifier class for language
     if (this.locale) {
-      $("body").addClass("pkt_ext_saved_" + this.locale);
+      document
+        .querySelector(`body`)
+        .classList.add(`pkt_ext_saved_${this.locale}`);
     }
 
+    const parser = new DOMParser();
+
     // Create actual content
-    $("body").append(Handlebars.templates.saved_shell(this.dictJSON));
+    document
+      .querySelector(`body`)
+      .append(
+        parser.parseFromString(
+          Handlebars.templates.saved_shell(this.dictJSON),
+          `text/html`
+        ).documentElement
+      );
 
     // Add in premium content (if applicable based on premium status)
-    this.createPremiumFunctionality();
+    if (
+      this.premiumStatus &&
+      !document.querySelector(`.pkt_ext_suggestedtag_detail`)
+    ) {
+      this.premiumDetailsAdded = true;
+
+      let elSubshell = document.querySelector(`body .pkt_ext_subshell`);
+
+      let elPremiumShell = parser.parseFromString(
+        Handlebars.templates.saved_premiumshell(this.dictJSON),
+        `text/html`
+      ).documentElement;
+
+      elSubshell.insertBefore(elPremiumShell, elSubshell.firstChild);
+
+      document
+        .querySelector(`.pkt_ext_initload`)
+        .append(
+          parser.parseFromString(
+            Handlebars.templates.saved_premiumextras(this.dictJSON),
+            `text/html`
+          ).documentElement
+        );
+    }
 
     // Initialize functionality for overlay
-    this.wrapper = $(".pkt_ext_containersaved");
     this.initTagInput();
     this.initAddTagInput();
     this.initRemovePageInput();
     this.initOpenListInput();
     this.initAutoCloseEvents();
-  },
-  createPremiumFunctionality() {
-    if (this.premiumStatus && !$(".pkt_ext_suggestedtag_detail").length) {
-      this.premiumDetailsAdded = true;
-
-      // Append shell for suggested tags
-      $("body .pkt_ext_subshell").prepend(
-        Handlebars.templates.saved_premiumshell(this.dictJSON)
-      );
-
-      $(".pkt_ext_initload").append(
-        Handlebars.templates.saved_premiumextras(this.dictJSON)
-      );
-    }
-  },
-};
-
-// Layer between Bookmarklet and Extensions
-var PKT_SAVED = function() {};
-
-PKT_SAVED.prototype = {
-  init() {
-    if (this.inited) {
-      return;
-    }
-    this.panelId = pktPanelMessaging.panelIdFromURL(window.location.href);
-    this.overlay = new PKT_SAVED_OVERLAY();
-    this.setupMutationObserver();
-
-    this.inited = true;
-  },
-
-  addMessageListener(messageId, callback) {
-    pktPanelMessaging.addMessageListener(messageId, this.panelId, callback);
-  },
-
-  sendMessage(messageId, payload, callback) {
-    pktPanelMessaging.sendMessage(messageId, this.panelId, payload, callback);
-  },
-
-  setupMutationObserver() {
-    // Select the node that will be observed for mutations
-    const targetNode = document.body;
-
-    // Options for the observer (which mutations to observe)
-    const config = { attributes: false, childList: true, subtree: true };
-
-    // Callback function to execute when mutations are observed
-    const callback = (mutationList, observer) => {
-      mutationList.forEach(mutation => {
-        switch (mutation.type) {
-          case "childList": {
-            /* One or more children have been added to and/or removed
-               from the tree.
-               (See mutation.addedNodes and mutation.removedNodes.) */
-            let clientHeight = document.body.clientHeight;
-            if (this.overlay.tagsDropdownOpen) {
-              clientHeight = Math.max(clientHeight, 252);
-            }
-            thePKT_SAVED.sendMessage("PKT_resizePanel", {
-              width: document.body.clientWidth,
-              height: clientHeight,
-            });
-            break;
-          }
-        }
-      });
-    };
-
-    // Create an observer instance linked to the callback function
-    const observer = new MutationObserver(callback);
-
-    // Start observing the target node for configured mutations
-    observer.observe(targetNode, config);
-  },
-
-  create() {
-    var myself = this;
-    var url = window.location.href.match(/premiumStatus=([\w|\d|\.]*)&?/);
-    if (url && url.length > 1) {
-      myself.overlay.premiumStatus = url[1] == "1";
-    }
-    var fxasignedin = window.location.href.match(/fxasignedin=([\w|\d|\.]*)&?/);
-    if (fxasignedin && fxasignedin.length > 1) {
-      myself.overlay.fxasignedin = fxasignedin[1] == "1";
-    }
-    var host = window.location.href.match(/pockethost=([\w|\.]*)&?/);
-    if (host && host.length > 1) {
-      myself.overlay.pockethost = host[1];
-    }
-    var locale = window.location.href.match(/locale=([\w|\.]*)&?/);
-    if (locale && locale.length > 1) {
-      myself.overlay.locale = locale[1].toLowerCase();
-    }
-
-    myself.overlay.create();
 
     // wait confirmation of save before flipping to final saved state
-    thePKT_SAVED.addMessageListener("PKT_saveLink", function(resp) {
+    thePKT_PANEL.addMessageListener("PKT_saveLink", function(resp) {
       const { data } = resp;
       if (data.status == "error") {
         if (typeof data.error == "object") {
           if (data.error.localizedKey) {
-            myself.overlay.showStateError(
-              myself.overlay.dictJSON.pagenotsaved,
-              myself.overlay.dictJSON[data.error.localizedKey]
+            myself.showStateError(
+              myself.dictJSON.pagenotsaved,
+              myself.dictJSON[data.error.localizedKey]
             );
           } else {
-            myself.overlay.showStateError(
-              myself.overlay.dictJSON.pagenotsaved,
+            myself.showStateError(
+              myself.dictJSON.pagenotsaved,
               data.error.message
             );
           }
         } else {
-          myself.overlay.showStateError(
-            myself.overlay.dictJSON.pagenotsaved,
-            myself.overlay.dictJSON.errorgeneric
+          myself.showStateError(
+            myself.dictJSON.pagenotsaved,
+            myself.dictJSON.errorgeneric
           );
         }
         return;
       }
 
-      myself.overlay.showStateSaved(data);
+      myself.showStateSaved(data);
     });
 
-    thePKT_SAVED.addMessageListener("PKT_renderItemRecs", function(resp) {
+    thePKT_PANEL.addMessageListener("PKT_renderItemRecs", function(resp) {
       const { data } = resp;
-      myself.overlay.renderItemRecs(data);
+      myself.renderItemRecs(data);
     });
 
     // tell back end we're ready
-    thePKT_SAVED.sendMessage("PKT_show_saved");
+    thePKT_PANEL.sendMessage("PKT_show_saved");
   },
 };
-
-$(function() {
-  if (!window.thePKT_SAVED) {
-    var thePKT_SAVED = new PKT_SAVED();
-    /* global thePKT_SAVED */
-    window.thePKT_SAVED = thePKT_SAVED;
-    thePKT_SAVED.init();
-  }
-
-  var pocketHost = thePKT_SAVED.overlay.pockethost;
-  // send an async message to get string data
-  thePKT_SAVED.sendMessage(
-    "PKT_initL10N",
-    {
-      tos: [
-        "https://" + pocketHost + "/tos?s=ffi&t=tos&tv=panel_tryit",
-        "https://" +
-          pocketHost +
-          "/privacy?s=ffi&t=privacypolicy&tv=panel_tryit",
-      ],
-    },
-    function(resp) {
-      const { data } = resp;
-      window.pocketStrings = data.strings;
-      // Set the writing system direction
-      document.documentElement.setAttribute("dir", data.dir);
-      window.thePKT_SAVED.create();
-    }
-  );
-});

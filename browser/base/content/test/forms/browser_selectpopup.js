@@ -829,8 +829,12 @@ async function performLargePopupTests(win) {
     // Don't check the scroll position for the last step as the popup will be cut off.
     if (positions.length) {
       let cs = win.getComputedStyle(selectPopup);
+      let csArrow = win.getComputedStyle(selectPopup.scrollBox);
       let bpBottom =
-        parseFloat(cs.paddingBottom) + parseFloat(cs.borderBottomWidth);
+        parseFloat(cs.paddingBottom) +
+        parseFloat(cs.borderBottomWidth) +
+        parseFloat(csArrow.paddingBottom) +
+        parseFloat(csArrow.borderBottomWidth);
       let selectedOption = 60;
 
       if (Services.prefs.getBoolPref("dom.forms.selectSearch")) {
@@ -912,10 +916,10 @@ add_task(async function test_large_popup_in_small_window() {
     false,
     e => {
       info(`Got resize event (innerHeight: ${newWin.innerHeight})`);
-      return newWin.innerHeight <= 400;
+      return newWin.innerHeight <= 450;
     }
   );
-  newWin.resizeTo(600, 400);
+  newWin.resizeTo(600, 450);
   await resizePromise;
 
   const pageUrl = "data:text/html," + escape(PAGECONTENT_SMALL);
@@ -1227,6 +1231,7 @@ add_task(async function test_zoom() {
     ZoomManager.toggleZoom();
   }
 
+  FullZoom.setZoom(1.0, tab.linkedBrowser); // make sure the zoom level is reset
   BrowserTestUtils.removeTab(tab);
 });
 

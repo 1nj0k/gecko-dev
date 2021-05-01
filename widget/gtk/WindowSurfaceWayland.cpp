@@ -16,6 +16,7 @@
 #include "nsTArray.h"
 #include "mozilla/ScopeExit.h"
 #include "mozilla/StaticPrefs_widget.h"
+#include "mozilla/WidgetUtils.h"
 
 #include <sys/mman.h>
 #include <fcntl.h>
@@ -169,9 +170,17 @@ RefPtr<nsWaylandDisplay> WindowBackBuffer::GetWaylandDisplay() {
 
 static int WaylandAllocateShmMemory(int aSize) {
   int fd = -1;
+
+  nsCString shmPrefix("/");
+  const char* snapName = mozilla::widget::WidgetUtils::GetSnapInstanceName();
+  if (snapName != nullptr) {
+    shmPrefix.AppendPrintf("snap.%s.", snapName);
+  }
+  shmPrefix.Append("wayland.mozilla.ipc");
+
   do {
     static int counter = 0;
-    nsPrintfCString shmName("/wayland.mozilla.ipc.%d", counter++);
+    nsPrintfCString shmName("%s.%d", shmPrefix.get(), counter++);
     fd = shm_open(shmName.get(), O_CREAT | O_RDWR | O_EXCL, 0600);
     if (fd >= 0) {
       // We don't want to use leaked file
@@ -487,6 +496,11 @@ WindowSurfaceWayland::WindowSurfaceWayland(nsWindow* aWindow)
   for (int i = 0; i < BACK_BUFFER_NUM; i++) {
     mShmBackupBuffer[i] = nullptr;
   }
+  // Use slow compositing on KDE only.
+  const char* currentDesktop = getenv("XDG_CURRENT_DESKTOP");
+  if (currentDesktop && strstr(currentDesktop, "KDE") != nullptr) {
+    mSmoothRendering = CACHE_NONE;
+  }
 }
 
 WindowSurfaceWayland::~WindowSurfaceWayland() {
@@ -737,10 +751,6 @@ already_AddRefed<gfx::DrawTarget> WindowSurfaceWayland::Lock(
     return nullptr;
   }
 
-  // Wait until all pending events are processed. There may be queued
-  // wl_buffer release event which releases our wl_buffer for further rendering.
-  mWaylandDisplay->WaitForSyncEnd();
-
   // Lock the surface *after* WaitForSyncEnd() call as is can fire
   // FlushPendingCommits().
   MutexAutoLock lock(mSurfaceLock);
@@ -817,13 +827,12 @@ already_AddRefed<gfx::DrawTarget> WindowSurfaceWayland::Lock(
     mMozContainerRect = mozContainerSize;
   }
 
-  // We can draw directly only when we redraw significant part of the window
-  // to avoid flickering or do only fullscreen updates in smooth mode.
-  mDrawToWaylandBufferDirectly =
-      mSmoothRendering
-          ? windowRedraw
-          : (windowRedraw || (lockSize.width * 2 > mozContainerSize.width &&
-                              lockSize.height * 2 > mozContainerSize.height));
+  mDrawToWaylandBufferDirectly = windowRedraw || mSmoothRendering == CACHE_NONE;
+  if (!mDrawToWaylandBufferDirectly && mSmoothRendering == CACHE_SMALL) {
+    mDrawToWaylandBufferDirectly =
+        (lockSize.width * 2 > mozContainerSize.width &&
+         lockSize.height * 2 > mozContainerSize.height);
+  }
 
   if (!mDrawToWaylandBufferDirectly) {
     // Don't switch wl_buffers when we cache drawings.
@@ -1052,7 +1061,7 @@ bool WindowSurfaceWayland::FlushPendingCommitsLocked() {
 
   if (mWaylandFullscreenDamage) {
     LOGWAYLAND(("    wl_surface_damage full screen\n"));
-    wl_surface_damage(waylandSurface, 0, 0, INT_MAX, INT_MAX);
+    wl_surface_damage_buffer(waylandSurface, 0, 0, INT_MAX, INT_MAX);
   } else {
     for (auto iter = mWaylandBufferDamage.RectIter(); !iter.Done();
          iter.Next()) {

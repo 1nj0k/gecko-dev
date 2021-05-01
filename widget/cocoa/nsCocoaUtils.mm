@@ -608,11 +608,6 @@ NSEvent* nsCocoaUtils::MakeNewCococaEventFromWidgetEvent(const WidgetKeyboardEve
 }
 
 // static
-void nsCocoaUtils::InitNPCocoaEvent(NPCocoaEvent* aNPCocoaEvent) {
-  memset(aNPCocoaEvent, 0, sizeof(NPCocoaEvent));
-}
-
-// static
 void nsCocoaUtils::InitInputEvent(WidgetInputEvent& aInputEvent, NSEvent* aNativeEvent) {
   NS_OBJC_BEGIN_TRY_IGNORE_BLOCK;
 
@@ -725,12 +720,9 @@ bool nsCocoaUtils::HiDPIEnabled() {
       if ([desc objectForKey:NSDeviceIsScreen] == nil) {
         continue;
       }
-      CGFloat scale = [screen respondsToSelector:@selector(backingScaleFactor)]
-                          ? [screen backingScaleFactor]
-                          : 1.0;
       // Currently, we only care about differentiating "1.0" and "2.0",
       // so we set one of the two low bits to record which.
-      if (scale > 1.0) {
+      if ([screen backingScaleFactor] > 1.0) {
         scaleFactors |= 2;
       } else {
         scaleFactors |= 1;
@@ -991,6 +983,36 @@ NSEventModifierFlags nsCocoaUtils::ConvertWidgetModifiersToMacModifierFlags(
     }
   }
   return modifierFlags;
+}
+
+mozilla::MouseButton nsCocoaUtils::ButtonForEvent(NSEvent* aEvent) {
+  switch (aEvent.type) {
+    case NSEventTypeLeftMouseDown:
+    case NSEventTypeLeftMouseDragged:
+    case NSEventTypeLeftMouseUp:
+      return MouseButton::ePrimary;
+    case NSEventTypeRightMouseDown:
+    case NSEventTypeRightMouseDragged:
+    case NSEventTypeRightMouseUp:
+      return MouseButton::eSecondary;
+    case NSEventTypeOtherMouseDown:
+    case NSEventTypeOtherMouseDragged:
+    case NSEventTypeOtherMouseUp:
+      switch (aEvent.buttonNumber) {
+        case 3:
+          return MouseButton::eX1;
+        case 4:
+          return MouseButton::eX2;
+        default:
+          // The middle button usually has button 2, but if this is a synthesized event (for which
+          // you cannot specify a buttonNumber), then the button will be 0. Treat all remaining
+          // OtherMouse events as the middle button.
+          return MouseButton::eMiddle;
+      }
+    default:
+      // Treat non-mouse events as the primary mouse button.
+      return MouseButton::ePrimary;
+  }
 }
 
 NSMutableAttributedString* nsCocoaUtils::GetNSMutableAttributedString(

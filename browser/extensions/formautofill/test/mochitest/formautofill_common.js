@@ -10,7 +10,7 @@ let defaultTextColor;
 let expectingPopup = null;
 
 const { FormAutofillUtils } = SpecialPowers.Cu.import(
-  "resource://formautofill/FormAutofillUtils.jsm"
+  "resource://autofill/FormAutofillUtils.jsm"
 );
 
 async function sleep(ms = 500, reason = "Intentionally wait for UI ready") {
@@ -22,7 +22,7 @@ async function focusAndWaitForFieldsIdentified(
   input,
   mustBeIdentified = false
 ) {
-  info("expecting the target input being focused and identified");
+  info("expecting the target input being focused and indentified");
   if (typeof input === "string") {
     input = document.querySelector(input);
   }
